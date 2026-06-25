@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -25,7 +24,6 @@ import (
 
 const testNamespace = "docker-in-kubernetes"
 
-// testEnv bundles everything an integration test needs to drive `docker -H ...`.
 type testEnv struct {
 	Pods       *k8s.Pods
 	Registry   *forwarder.Registry
@@ -85,7 +83,8 @@ func newEnv(t *testing.T) *testEnv {
 }
 
 // docker runs the docker CLI against the test daemon with a per-call timeout.
-// Returns combined stdout+stderr and the exit error.
+// Returns combined stdout+stderr and the exec error (or context.DeadlineExceeded
+// if the CLI hung).
 func (e *testEnv) docker(t *testing.T, timeout time.Duration, args ...string) (string, error) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -94,40 +93,14 @@ func (e *testEnv) docker(t *testing.T, timeout time.Duration, args ...string) (s
 	cmd := exec.CommandContext(ctx, "docker", append([]string{"-H", "unix://" + e.SocketPath}, args...)...)
 	cmd.Env = append(os.Environ(), "DOCKER_HOST=unix://"+e.SocketPath)
 	out, err := cmd.CombinedOutput()
-	if ctx.Err() == context.DeadlineExceeded {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return string(out), context.DeadlineExceeded
 	}
 	return string(out), err
 }
 
-// mustDocker fails the test if the docker CLI errors or times out.
-func (e *testEnv) mustDocker(t *testing.T, timeout time.Duration, args ...string) string {
-	t.Helper()
-	out, err := e.docker(t, timeout, args...)
-	if err != nil {
-		t.Fatalf("docker %s failed: %v\nOutput:\n%s", strings.Join(args, " "), err, out)
-	}
-	return out
-}
-
-// cleanupPod best-effort deletes a pod by name; used as t.Cleanup.
-func cleanupPod(t *testing.T, pods *k8s.Pods, name string) {
-	t.Helper()
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		_ = pods.Delete(ctx, name, 0)
-	})
-}
-
-// freeLocalPort returns a 127.0.0.1 TCP port that is free at the moment of
-// the call. There is an unavoidable race with another process binding the
-// same port before the daemon does.
-func freeLocalPort(t *testing.T) int {
-	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	port := ln.Addr().(*net.TCPAddr).Port
-	_ = ln.Close()
-	return port
+// dialSocket connects to the UNIX socket with a timeout.
+func dialSocket(path string, timeout time.Duration) (net.Conn, error) {
+	d := net.Dialer{Timeout: timeout}
+	return d.Dial("unix", path)
 }

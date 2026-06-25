@@ -2,6 +2,7 @@
 go = "1.26"
 golangci-lint = "2.12.2"
 kind = "0.32.0"
+kubectl = "1.32"
 
 [tasks.build]
 description = "Build the docker-in-kubernetes binary into ./bin"
@@ -41,10 +42,14 @@ depends = ["fmt", "vet", "lint", "test"]
 # Never touches ~/.kube/config.
 
 [tasks.integration-up]
-description = "Create the dik-test kind cluster and write its kubeconfig to ./tmp/integration-kubeconfig"
+description = "Create the dik-test kind cluster (or refresh kubeconfig if it already exists) and ensure the docker-in-kubernetes namespace"
 run = """
 mkdir -p tmp
-kind create cluster --name dik-test --kubeconfig ./tmp/integration-kubeconfig
+if kind get clusters 2>/dev/null | grep -q '^dik-test$'; then
+  kind export kubeconfig --name dik-test --kubeconfig ./tmp/integration-kubeconfig
+else
+  kind create cluster --name dik-test --kubeconfig ./tmp/integration-kubeconfig
+fi
 KUBECONFIG=./tmp/integration-kubeconfig kubectl create namespace docker-in-kubernetes --dry-run=client -o yaml | KUBECONFIG=./tmp/integration-kubeconfig kubectl apply -f -
 """
 
@@ -54,5 +59,6 @@ run = "kind delete cluster --name dik-test"
 
 [tasks.integration-test]
 description = "Run integration tests against the dik-test kind cluster (must be up)"
-env = { KUBECONFIG = "./tmp/integration-kubeconfig" }
-run = "go test -tags=integration -count=1 -timeout 5m ./internal/integration/..."
+# Tight overall timeout: if a single test wedges we want to know fast, not
+# after 5 minutes.
+run = 'KUBECONFIG="$PWD/tmp/integration-kubeconfig" go test -tags=integration -count=1 -timeout 60s ./internal/integration/...'
