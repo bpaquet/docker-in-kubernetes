@@ -1,0 +1,36 @@
+[tools]
+go = "1.24"
+golangci-lint = "2.1.6"
+
+[tasks.build]
+description = "Build the docker-in-kubernetes binary into ./bin"
+run = "go build -o bin/docker-in-kubernetes ./cmd/docker-in-kubernetes"
+
+[tasks.test]
+description = "Run unit tests with the race detector"
+run = "go test -race -count=1 ./..."
+
+[tasks.lint]
+description = "Run golangci-lint"
+run = "golangci-lint run"
+
+[tasks.fmt]
+description = "Apply gofmt to the tree"
+run = "gofmt -w ."
+
+[tasks.vet]
+description = "Run go vet"
+run = "go vet ./..."
+
+[tasks.tidy]
+description = "Run go mod tidy"
+run = "go mod tidy"
+
+[tasks.run]
+description = "Build then run the daemon on the default socket"
+depends = ["build"]
+run = "./bin/docker-in-kubernetes --socket /tmp/docker-in-kubernetes.sock"
+
+[tasks.ci]
+description = "Run the same checks CI runs (fmt, vet, lint, test)"
+depends = ["fmt", "vet", "lint", "test"]
