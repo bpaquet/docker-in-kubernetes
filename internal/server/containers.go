@@ -104,21 +104,30 @@ func (c *containerHandlers) start(w http.ResponseWriter, r *http.Request) {
 }
 
 // wait: POST /containers/{id}/wait?condition=...
-// Blocks until the pod is no longer Running, then returns an exit code.
-// The docker CLI calls this even after `docker run -d` to detect immediate
-// startup failures, so a 404 here surfaces as a spurious "error waiting for
-// container" line after the (successful) container ID.
+//
+// The docker CLI subscribes here BEFORE issuing /start so it can detect
+// immediate startup failures; it expects the response headers to arrive right
+// away (the body comes when the container exits). If we don't flush headers
+// early, the CLI's wait subscription blocks and `docker run -d` never
+// returns.
 func (c *containerHandlers) wait(w http.ResponseWriter, r *http.Request) {
 	pod, ok := c.resolvePod(w, r)
 	if !ok {
 		return
 	}
+	setDockerHeaders(w)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
 	exit, err := c.waitForExit(r.Context(), pod.Name)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		// Headers already sent; nothing meaningful to return. Closing the
+		// connection signals the client.
 		return
 	}
-	writeJSON(w, http.StatusOK, dockerapi.WaitResponse{StatusCode: exit})
+	_ = json.NewEncoder(w).Encode(dockerapi.WaitResponse{StatusCode: exit})
 }
 
 func (c *containerHandlers) waitForExit(ctx context.Context, name string) (int64, error) {
