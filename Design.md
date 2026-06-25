@@ -96,7 +96,7 @@ This is production-grade code, not a prototype.
 - **Unit tests** on every package. Table-driven where natural. `testify/require` for assertions.
 - **K8s interactions** tested with `k8s.io/client-go/kubernetes/fake` — no hand-rolled mocks at the wrapper layer.
 - **Pod-spec builder, name sanitization, container ID derivation, port-binding parsing** are pure functions — fully unit-testable, no I/O.
-- **End-to-end tests** against a real cluster cover the redis happy path and the failure modes the design promises (image pull failure → `docker run` exits non-zero, port already bound, missing namespace).
+- **End-to-end tests** under `internal/integration` (`//go:build integration`) drive the real `docker` CLI against the daemon's UNIX socket; the daemon points at a dedicated `kind` cluster whose kubeconfig lives at `./tmp/integration-kubeconfig` (never `~/.kube/config`). Tasks: `mise run integration-up`, `integration-test`, `integration-down`. Coverage: docker version / ping / run -d / ps / logs / inspect / kill / rm (incl. rm-of-already-gone) / port-forward round trip / image pull fail-fast / non-detached run rejection.
 - **CI**: `gofmt -d`, `go vet`, `golangci-lint run`, `go test ./...` on every push. CI must be green before merge.
 - **No silent errors**. Wrap with `%w`; surface k8s reasons in messages returned to the CLI.
 - **Coverage** is a side-effect of "test the things that matter", not a target. Don't pad with trivial getter tests.
@@ -106,17 +106,21 @@ This is production-grade code, not a prototype.
 - **Go**: 1.26 (k8s.io/client-go v0.36 requires it; also gets `t.Context()`).
 - **HTTP server**: stdlib `net/http`. No router framework.
 - **Logging**: `log/slog` with a text handler; level via `--log-level` flag (default `info`).
-- **K8s client**: `k8s.io/client-go` latest minor matching the target cluster (pinned in `go.mod` once cluster version is known).
+- **K8s client**: `k8s.io/client-go v0.36`.
+- **golangci-lint**: 2.12.2 (needs to be built with a Go ≥ the module's directive — 2.1.6 from PR #1 was Go 1.24 and could not parse Go 1.26 export data).
+- **Local integration cluster**: `kind v0.32` + `kubectl 1.32`, both pinned in `mise.toml`.
 
 ## Container name sanitization
 
-K8s pod names are RFC 1123: lowercase alphanumerics + `-`, max 63 chars. Docker `--name` is more permissive. Translation rule:
+K8s pod names are RFC 1123: lowercase alphanumerics + `-`, max 63 chars. Docker `--name` is more permissive. Translation rule (`internal/podspec.SanitizeName`):
 
 - Lowercase the input.
-- Replace any character not in `[a-z0-9-]` with `-`.
-- Collapse consecutive `-`, trim leading/trailing `-`.
-- Truncate to 63 chars.
+- Replace every run of non-alphanumeric characters with a single `-` (collapses both invalid chars and existing separators in one pass).
+- Trim leading/trailing `-`.
+- Truncate to 63 chars and re-trim a trailing `-`.
 - Store the original `--name` in annotation `docker-in-kubernetes.io/docker-name` so `docker ps`/`inspect` round-trip the user's chosen name.
+
+When no `--name` is given, `internal/podspec.GeneratedName` returns `dik-<image-base>-<hex6>` (e.g. `dik-redis-7af34c`).
 
 ## Non-goals (v1)
 
@@ -168,8 +172,8 @@ API version: advertise `1.43` (Docker Engine 24.0) via `/_ping` `Api-Version` he
 ## Container ↔ Pod mapping
 
 - **1 container = 1 Pod**, single container inside the pod.
-- **Pod name**: `--name` if provided; otherwise a generated slug (e.g. `docker-in-kubernetes-redis-a1b2`).
-- **Docker container ID**: Pod's `metadata.uid` (UUID, hex-stripped → first 12 chars for short ID).
+- **Pod name**: sanitized `--name` if provided; otherwise `dik-<image-base>-<hex6>` (see *Container name sanitization*).
+- **Docker container ID**: `sha256("<namespace>/<podname>")` rendered as 64 hex chars; first 12 chars used for the short ID.
 - **Pod spec**:
   - `restartPolicy: Never`
   - One container, image = Docker image as-is
@@ -182,8 +186,10 @@ API version: advertise `1.43` (Docker Engine 24.0) via `/_ping` `Api-Version` he
 - **Annotations**:
   - `docker-in-kubernetes.io/created-at=<RFC3339>`
   - `docker-in-kubernetes.io/image=<original image string>`
-  - `docker-in-kubernetes.io/ports=<json of -p mappings>`
-  - `docker-in-kubernetes.io/env=<json of -e>` (for `docker inspect` fidelity)
+  - `docker-in-kubernetes.io/docker-name=<original --name value>`
+  - `docker-in-kubernetes.io/ports=<json of -p mappings>` (only when non-empty)
+  - `docker-in-kubernetes.io/env=<json of -e>` (only when non-empty; for `docker inspect` fidelity)
+  - `docker-in-kubernetes.io/labels=<json of -l user labels>` (only when non-empty)
 
 ## Port forwarding
 
@@ -224,7 +230,16 @@ docker-in-kubernetes picks one of two forwarder backends at startup, based on wh
 | `kill`      | `DELETE` Pod with `gracePeriodSeconds=0`. Close forwards.                  |
 | `rm`        | Same as `kill` if running; no-op if pod already gone.                      |
 | `logs`      | Stream from `GET /api/v1/namespaces/{ns}/pods/{name}/log?follow=true`.     |
-| `exec`      | `POST .../pods/{name}/exec` SPDY stream, proxied through Docker's exec protocol. |
+| `exec`      | `POST .../pods/{name}/exec` SPDY stream, proxied through Docker's exec protocol. *(not yet implemented)* |
+| `wait`      | Short-circuited for `condition=next-exit` (returns `{StatusCode:0}` immediately so `docker run -d` doesn't hang); blocks until exit for other conditions. See [Wait endpoint quirk](#wait-endpoint-quirk). |
+
+### Wait endpoint quirk
+
+`docker run -d` subscribes to `/containers/{id}/wait?condition=next-exit` before the run command can return; the docker CLI we tested against blocks reading the response body until that subscription "completes", even though for `-d` no caller actually consumes the result. Real moby blocks until the container exits — which in our setup is when the user deletes the container, so `docker run -d` would hang.
+
+Workaround in v1: for `condition=next-exit` only, return `{"StatusCode": 0}` immediately. The CLI's wait goroutine completes, `docker run -d` prints the ID and returns, and no command we currently support is affected (we don't implement `--rm`, and `docker wait <id>` defaults to `not-running` which still blocks correctly).
+
+This is a deviation from upstream semantics — revisit when we model lifecycle events properly.
 
 **Lifecycle simplification (decided)**: k8s has no "stopped pod" state, so we collapse Docker's two-phase model:
 
@@ -246,9 +261,10 @@ This trades fidelity for simplicity. Users who want restart semantics use `docke
 CLI flags:
 
 - `--socket` (default `/tmp/docker-in-kubernetes.sock`): UNIX socket path
-- `--namespace` (required): k8s namespace for all pods
+- `--namespace` (default `docker-in-kubernetes`): k8s namespace for all pods
 - `--kubeconfig`: path to kubeconfig (default: `KUBECONFIG` env, else `~/.kube/config`)
 - `--context`: kubeconfig context (default: current context)
+- `--log-level` (default `info`): `debug` / `info` / `warn` / `error`
 
 When `KUBERNETES_SERVICE_HOST` is set, docker-in-kubernetes uses in-cluster config and ignores `--kubeconfig`/`--context`.
 

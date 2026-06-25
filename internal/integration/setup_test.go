@@ -54,7 +54,6 @@ func wipeStalePods() {
 
 type testEnv struct {
 	Pods       *k8s.Pods
-	Registry   *forwarder.Registry
 	SocketPath string
 }
 
@@ -113,7 +112,7 @@ func newEnv(t *testing.T) *testEnv {
 		}
 	})
 
-	return &testEnv{Pods: pods, Registry: registry, SocketPath: socketPath}
+	return &testEnv{Pods: pods, SocketPath: socketPath}
 }
 
 // docker runs the docker CLI against the test daemon with a per-call timeout.
@@ -125,7 +124,6 @@ func (e *testEnv) docker(t *testing.T, timeout time.Duration, args ...string) (s
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "docker", append([]string{"-H", "unix://" + e.SocketPath}, args...)...)
-	cmd.Env = append(os.Environ(), "DOCKER_HOST=unix://"+e.SocketPath)
 	out, err := cmd.CombinedOutput()
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return string(out), context.DeadlineExceeded

@@ -227,7 +227,7 @@ func (c *containerHandlers) list(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	all := strings.EqualFold(r.URL.Query().Get("all"), "1") || strings.EqualFold(r.URL.Query().Get("all"), "true")
+	all := boolQuery(r, "all")
 	out := make([]dockerapi.ContainerSummary, 0, len(pods))
 	for i := range pods {
 		s := buildSummary(&pods[i])
@@ -254,7 +254,7 @@ func (c *containerHandlers) logs(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	follow := r.URL.Query().Get("follow") == "1" || r.URL.Query().Get("follow") == "true"
+	follow := boolQuery(r, "follow")
 	tail, _ := strconv.ParseInt(r.URL.Query().Get("tail"), 10, 64)
 
 	rc, err := c.pods.StreamLogs(r.Context(), pod.Name, k8s.LogOptions{Follow: follow, TailLines: tail})
@@ -354,6 +354,13 @@ func toForwarderMappings(ports []podspec.PortMapping) ([]forwarder.Mapping, erro
 		})
 	}
 	return out, nil
+}
+
+// boolQuery treats `?key=1` and `?key=true` as truthy, matching docker CLI
+// query-string conventions.
+func boolQuery(r *http.Request, key string) bool {
+	v := r.URL.Query().Get(key)
+	return v == "1" || strings.EqualFold(v, "true")
 }
 
 func parseGrace(s string, def time.Duration) time.Duration {

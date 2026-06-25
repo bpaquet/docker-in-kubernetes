@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -53,7 +54,7 @@ func buildSummary(pod *corev1.Pod) dockerapi.ContainerSummary {
 		Ports:      summaryPorts(pod),
 		Labels:     labels,
 		State:      state,
-		Status:     status(pod, state, created),
+		Status:     status(state, created),
 		HostConfig: dockerapi.SummaryHostConfig{NetworkMode: "default"},
 	}
 }
@@ -116,21 +117,8 @@ func summaryCommand(pod *corev1.Pod) string {
 	if len(pod.Spec.Containers) == 0 {
 		return ""
 	}
-	parts := make([]string, 0)
-	parts = append(parts, pod.Spec.Containers[0].Command...)
-	parts = append(parts, pod.Spec.Containers[0].Args...)
-	return joinSpaces(parts)
-}
-
-func joinSpaces(p []string) string {
-	out := ""
-	for i, s := range p {
-		if i > 0 {
-			out += " "
-		}
-		out += s
-	}
-	return out
+	c := pod.Spec.Containers[0]
+	return strings.Join(append(append([]string{}, c.Command...), c.Args...), " ")
 }
 
 func summaryPorts(pod *corev1.Pod) []dockerapi.Port {
@@ -197,7 +185,7 @@ func dockerStateFromPhase(phase corev1.PodPhase) string {
 	}
 }
 
-func status(_ *corev1.Pod, state string, created time.Time) string {
+func status(state string, created time.Time) string {
 	switch state {
 	case "running":
 		if created.IsZero() {

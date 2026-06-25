@@ -3,6 +3,7 @@ package podspec
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -54,9 +55,13 @@ func Build(in BuildInput) (*BuildResult, error) {
 		project = DefaultProject
 	}
 
-	podName, err := derivePodName(in.DockerName, in.Request.Image)
-	if err != nil {
-		return nil, err
+	podName := GeneratedName(in.Request.Image)
+	if in.DockerName != "" {
+		var err error
+		podName, err = SanitizeName(in.DockerName)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	ports, err := parsePortBindings(in.Request.HostConfig.PortBindings, in.Request.ExposedPorts)
@@ -115,13 +120,6 @@ func Build(in BuildInput) (*BuildResult, error) {
 	return &BuildResult{Pod: pod, PodName: podName, PortMappings: ports}, nil
 }
 
-func derivePodName(dockerName, image string) (string, error) {
-	if dockerName != "" {
-		return SanitizeName(dockerName)
-	}
-	return GeneratedName(image), nil
-}
-
 func parsePortBindings(
 	bindings map[string][]dockerapi.PortBinding,
 	exposed map[string]struct{},
@@ -167,7 +165,12 @@ func parsePortBindings(
 	for _, m := range seen {
 		out = append(out, m)
 	}
-	sortPortMappings(out)
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].ContainerPort != out[j].ContainerPort {
+			return out[i].ContainerPort < out[j].ContainerPort
+		}
+		return out[i].Protocol < out[j].Protocol
+	})
 	return out, nil
 }
 
@@ -200,21 +203,6 @@ func protocolFromString(s string) corev1.Protocol {
 	}
 }
 
-// sortPortMappings gives Build a stable output order so tests and ps results
-// don't flap.
-func sortPortMappings(ms []PortMapping) {
-	for i := 1; i < len(ms); i++ {
-		for j := i; j > 0; j-- {
-			a, b := ms[j-1], ms[j]
-			if a.ContainerPort < b.ContainerPort ||
-				(a.ContainerPort == b.ContainerPort && a.Protocol <= b.Protocol) {
-				break
-			}
-			ms[j-1], ms[j] = b, a
-		}
-	}
-}
-
 func buildAnnotations(in BuildInput, ports []PortMapping) (map[string]string, error) {
 	out := map[string]string{
 		AnnotationCreatedAt:  in.Now.UTC().Format(time.RFC3339),
@@ -222,25 +210,28 @@ func buildAnnotations(in BuildInput, ports []PortMapping) (map[string]string, er
 		AnnotationDockerName: in.DockerName,
 	}
 	if len(ports) > 0 {
-		b, err := json.Marshal(ports)
-		if err != nil {
-			return nil, fmt.Errorf("marshal ports annotation: %w", err)
+		if err := marshalAnnotation(out, AnnotationPorts, ports); err != nil {
+			return nil, err
 		}
-		out[AnnotationPorts] = string(b)
 	}
 	if len(in.Request.Env) > 0 {
-		b, err := json.Marshal(in.Request.Env)
-		if err != nil {
-			return nil, fmt.Errorf("marshal env annotation: %w", err)
+		if err := marshalAnnotation(out, AnnotationEnv, in.Request.Env); err != nil {
+			return nil, err
 		}
-		out[AnnotationEnv] = string(b)
 	}
 	if len(in.Request.Labels) > 0 {
-		b, err := json.Marshal(in.Request.Labels)
-		if err != nil {
-			return nil, fmt.Errorf("marshal labels annotation: %w", err)
+		if err := marshalAnnotation(out, AnnotationLabels, in.Request.Labels); err != nil {
+			return nil, err
 		}
-		out[AnnotationLabels] = string(b)
 	}
 	return out, nil
+}
+
+func marshalAnnotation(m map[string]string, key string, v any) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Errorf("marshal %s annotation: %w", key, err)
+	}
+	m[key] = string(b)
+	return nil
 }

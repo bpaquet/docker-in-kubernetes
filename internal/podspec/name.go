@@ -10,7 +10,10 @@ import (
 
 const maxK8sNameLen = 63
 
-var notDNS1123 = regexp.MustCompile(`[^a-z0-9-]`)
+// nonAlnum matches any run of characters that are not lowercase alphanumeric.
+// It collapses both invalid characters and existing separators into a single
+// dash in one pass.
+var nonAlnum = regexp.MustCompile(`[^a-z0-9]+`)
 
 // SanitizeName converts a Docker container name to a valid RFC 1123 pod name.
 // If the input is empty, a random name like "dik-<hex8>" is returned.
@@ -18,9 +21,7 @@ func SanitizeName(input string) (string, error) {
 	if input == "" {
 		return randomName(), nil
 	}
-	out := strings.ToLower(input)
-	out = notDNS1123.ReplaceAllString(out, "-")
-	out = collapseDashes(out)
+	out := nonAlnum.ReplaceAllString(strings.ToLower(input), "-")
 	out = strings.Trim(out, "-")
 	if len(out) > maxK8sNameLen {
 		out = strings.TrimRight(out[:maxK8sNameLen], "-")
@@ -46,23 +47,6 @@ func GeneratedName(image string) string {
 		full = full[:maxK8sNameLen]
 	}
 	return full
-}
-
-func collapseDashes(s string) string {
-	var b strings.Builder
-	prevDash := false
-	for _, r := range s {
-		if r == '-' {
-			if prevDash {
-				continue
-			}
-			prevDash = true
-		} else {
-			prevDash = false
-		}
-		b.WriteRune(r)
-	}
-	return b.String()
 }
 
 // imageBase extracts the image name without registry path or tag/digest.
