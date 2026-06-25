@@ -1,4 +1,4 @@
-// Package sockutil contains helpers for binding the daemon's UNIX socket.
+// Package sockutil opens the daemon's UNIX socket.
 package sockutil
 
 import (
@@ -8,11 +8,8 @@ import (
 	"os"
 )
 
-// ListenUnix opens a UNIX socket at path with mode 0600.
-//
-// If path exists as a stale socket file, it is removed before binding. If
-// path exists as any other kind of file, ListenUnix refuses to remove it and
-// returns an error.
+// ListenUnix binds a UNIX socket at path with mode 0600, replacing any stale
+// socket. Refuses to remove a non-socket file at path.
 func ListenUnix(path string) (net.Listener, error) {
 	if info, err := os.Lstat(path); err == nil {
 		if info.Mode()&os.ModeSocket == 0 {

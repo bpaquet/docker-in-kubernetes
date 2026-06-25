@@ -64,7 +64,7 @@ func TestPingHEAD(t *testing.T) {
 
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
-	assert.Empty(t, body, "HEAD must not return a body")
+	assert.Empty(t, body)
 }
 
 func TestVersion(t *testing.T) {
@@ -121,8 +121,6 @@ func TestVersionPrefixWithUnknownEndpointStripsAndReturns404(t *testing.T) {
 }
 
 func TestVersionPrefixEdgeCases(t *testing.T) {
-	// Paths that look like a version prefix but aren't a real /vX.Y/ segment
-	// must NOT be stripped.
 	tests := []struct {
 		name           string
 		path           string

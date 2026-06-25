@@ -1,4 +1,4 @@
-// Package logutil contains slog helpers used by the daemon entrypoint.
+// Package logutil constructs the daemon's slog.Logger.
 package logutil
 
 import (
@@ -8,8 +8,6 @@ import (
 )
 
 // New returns a text-handler slog.Logger writing to w at the given level.
-// Level is parsed via slog.Level.UnmarshalText, so values like "debug",
-// "info", "warn", "error" (case-insensitive) are accepted.
 func New(w io.Writer, level string) (*slog.Logger, error) {
 	var lvl slog.Level
 	if err := lvl.UnmarshalText([]byte(level)); err != nil {

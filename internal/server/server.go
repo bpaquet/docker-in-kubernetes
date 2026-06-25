@@ -1,6 +1,4 @@
-// Package server implements the Docker Engine HTTP API subset exposed by
-// docker-in-kubernetes. It returns a plain http.Handler so callers own the
-// listener (UNIX socket, TCP, httptest, ...).
+// Package server implements the Docker Engine HTTP API subset.
 package server
 
 import (
@@ -12,17 +10,16 @@ import (
 )
 
 // APIVersion is the Docker Engine API version we advertise.
-const APIVersion = "1.43"
+// MinAPIVersion is the floor reported in /version.
+const (
+	APIVersion    = "1.43"
+	MinAPIVersion = "1.24"
+)
 
-// MinAPIVersion is the floor advertised in /version responses.
-const MinAPIVersion = "1.24"
-
-// Config configures the HTTP handler.
+// Config configures the HTTP handler returned by New.
 type Config struct {
-	// DaemonVersion is reported as Version in /version.
 	DaemonVersion string
-	// Logger is used for request logging. nil falls back to slog.Default().
-	Logger *slog.Logger
+	Logger        *slog.Logger
 }
 
 // New returns the HTTP handler implementing the Docker Engine API subset.
@@ -44,15 +41,8 @@ func New(cfg Config) http.Handler {
 	)
 }
 
-// versionPrefix matches Docker's optional /vX.Y URL prefix without consuming
-// the boundary character. The boundary must be '/' or end-of-string; that is
-// verified separately so paths like "/v1.43abc" are not stripped.
 var versionPrefix = regexp.MustCompile(`^/v[0-9]+\.[0-9]+`)
 
-// stripVersionPrefix rewrites /v1.43/foo -> /foo so a single set of routes
-// covers both versioned and unversioned requests. Paths whose version-like
-// prefix is followed by something other than '/' or end-of-string are left
-// untouched.
 func stripVersionPrefix(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
@@ -62,6 +52,8 @@ func stripVersionPrefix(next http.Handler) http.Handler {
 			return
 		}
 		end := loc[1]
+		// Boundary must be '/' or end-of-string; otherwise "/v1.43abc" would
+		// be wrongly recognized as a version prefix.
 		if end < len(path) && path[end] != '/' {
 			next.ServeHTTP(w, r)
 			return
@@ -78,14 +70,12 @@ func stripVersionPrefix(next http.Handler) http.Handler {
 	})
 }
 
-// statusRecorder captures the response status for logging.
 type statusRecorder struct {
 	http.ResponseWriter
 	status int
 }
 
-// WriteHeader captures the status code before delegating, so the request
-// logger can record it.
+// WriteHeader captures the status before delegating, for the request logger.
 func (s *statusRecorder) WriteHeader(code int) {
 	s.status = code
 	s.ResponseWriter.WriteHeader(code)
@@ -112,7 +102,6 @@ func chain(h http.Handler, mw ...func(http.Handler) http.Handler) http.Handler {
 	return h
 }
 
-// setDockerHeaders sets the response headers Docker clients use for negotiation.
 func setDockerHeaders(w http.ResponseWriter) {
 	h := w.Header()
 	h.Set("Api-Version", APIVersion)
@@ -131,7 +120,6 @@ func handlePing(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte("OK"))
 }
 
-// versionResponse mirrors the Docker Engine /version JSON shape.
 type versionResponse struct {
 	Version       string `json:"Version"`
 	APIVersion    string `json:"ApiVersion"`

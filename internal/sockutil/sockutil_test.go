@@ -11,9 +11,8 @@ import (
 	"github.com/bpaquet/docker-in-kubernetes/internal/sockutil"
 )
 
-// shortTempPath returns a UNIX socket path that fits inside the platform's
-// sun_path limit (104 bytes on darwin). t.TempDir() on darwin uses the long
-// /var/folders/... prefix, so tests chdir into it and use a short basename.
+// shortTempPath chdirs to a temp dir and returns a short relative socket path.
+// Needed because darwin's sun_path is 104 bytes and TempDir() is much longer.
 func shortTempPath(t *testing.T, name string) string {
 	t.Helper()
 	t.Chdir(t.TempDir())
@@ -36,14 +35,13 @@ func TestListenUnixCreatesSocketWithMode0600(t *testing.T) {
 func TestListenUnixRemovesStaleSocket(t *testing.T) {
 	path := shortTempPath(t, "s.sock")
 
-	// Leave a stale socket file behind: bind, disable unlink-on-close, close.
 	stale, err := net.Listen("unix", path)
 	require.NoError(t, err)
 	stale.(*net.UnixListener).SetUnlinkOnClose(false)
 	require.NoError(t, stale.Close())
 
 	info, err := os.Stat(path)
-	require.NoError(t, err, "stale socket file must exist before the second ListenUnix")
+	require.NoError(t, err)
 	require.True(t, info.Mode()&os.ModeSocket != 0)
 
 	listener, err := sockutil.ListenUnix(path)

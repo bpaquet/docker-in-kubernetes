@@ -1,5 +1,4 @@
-// Command docker-in-kubernetes runs the daemon that exposes a
-// Docker-compatible HTTP API on a UNIX socket.
+// Command docker-in-kubernetes runs the daemon.
 package main
 
 import (
@@ -18,8 +17,7 @@ import (
 	"github.com/bpaquet/docker-in-kubernetes/internal/sockutil"
 )
 
-// version is the daemon version reported in /version. Override at build time
-// with -ldflags "-X main.version=...".
+// version is overridden at build time with -ldflags "-X main.version=...".
 var version = "0.0.0-dev"
 
 func main() {
