@@ -5,6 +5,9 @@
 *.test
 *.out
 
+# Integration test scratch (kind kubeconfig etc.)
+/tmp/
+
 # Local environment / credentials — never commit
 .env
 .env.*

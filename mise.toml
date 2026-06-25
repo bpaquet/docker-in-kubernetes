@@ -1,6 +1,7 @@
 [tools]
 go = "1.26"
 golangci-lint = "2.12.2"
+kind = "0.32.0"
 
 [tasks.build]
 description = "Build the docker-in-kubernetes binary into ./bin"
@@ -34,3 +35,24 @@ run = "./bin/docker-in-kubernetes --socket /tmp/docker-in-kubernetes.sock"
 [tasks.ci]
 description = "Run the same checks CI runs (fmt, vet, lint, test)"
 depends = ["fmt", "vet", "lint", "test"]
+
+# --- Integration testing against a kind cluster -----------------------------
+# Lives entirely under ./tmp and a dedicated kind cluster named `dik-test`.
+# Never touches ~/.kube/config.
+
+[tasks.integration-up]
+description = "Create the dik-test kind cluster and write its kubeconfig to ./tmp/integration-kubeconfig"
+run = """
+mkdir -p tmp
+kind create cluster --name dik-test --kubeconfig ./tmp/integration-kubeconfig
+KUBECONFIG=./tmp/integration-kubeconfig kubectl create namespace docker-in-kubernetes --dry-run=client -o yaml | KUBECONFIG=./tmp/integration-kubeconfig kubectl apply -f -
+"""
+
+[tasks.integration-down]
+description = "Delete the dik-test kind cluster"
+run = "kind delete cluster --name dik-test"
+
+[tasks.integration-test]
+description = "Run integration tests against the dik-test kind cluster (must be up)"
+env = { KUBECONFIG = "./tmp/integration-kubeconfig" }
+run = "go test -tags=integration -count=1 -timeout 5m ./internal/integration/..."
