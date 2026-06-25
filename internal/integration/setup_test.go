@@ -47,7 +47,13 @@ func newEnv(t *testing.T) *testEnv {
 	registry := forwarder.NewRegistry()
 	fw := forwarder.NewSPDYForwarder(conn.Clientset, conn.REST, slog.Default())
 
-	socketPath := filepath.Join(t.TempDir(), "dik.sock")
+	// Use /tmp-rooted dir so the socket path fits in sun_path (104 bytes on
+	// darwin). t.TempDir() on darwin lives under /var/folders/... which is
+	// much longer than that.
+	socketDir, err := os.MkdirTemp("/tmp", "dik")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
+	socketPath := filepath.Join(socketDir, "s")
 	listener, err := sockutil.ListenUnix(socketPath)
 	require.NoError(t, err)
 
@@ -103,4 +109,26 @@ func (e *testEnv) docker(t *testing.T, timeout time.Duration, args ...string) (s
 func dialSocket(path string, timeout time.Duration) (net.Conn, error) {
 	d := net.Dialer{Timeout: timeout}
 	return d.Dial("unix", path)
+}
+
+// cleanupPod best-effort deletes a pod by name on test completion.
+func cleanupPod(t *testing.T, pods *k8s.Pods, name string) {
+	t.Helper()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_ = pods.Delete(ctx, name, 0)
+	})
+}
+
+// randSuffix returns a 6-char lowercase-alphanumeric suffix derived from the
+// monotonic clock; collisions across parallel tests are vanishingly rare.
+func randSuffix() string {
+	const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
+	now := time.Now().UnixNano()
+	var b [6]byte
+	for i := range b {
+		b[i] = alphabet[uint(now>>(uint(i)*5))%uint(len(alphabet))]
+	}
+	return string(b[:])
 }
