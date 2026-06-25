@@ -53,6 +53,29 @@ Two fundamental blockers:
 
 `devpod` already solves this with its own provider abstraction. Users who need devcontainers-on-k8s should use that.
 
+## First milestone
+
+`docker run -d -p 6379:6379 redis` works end-to-end against a real cluster:
+
+1. `docker -H unix:///path/to/docker-in-kubernetes.sock run -d -p 6379:6379 redis` returns a container ID.
+2. A Pod appears in the configured namespace, reaches `Ready`.
+3. `redis-cli -h 127.0.0.1 -p 6379 ping` returns `PONG`.
+4. `docker ps` shows the container.
+5. `docker logs <id>` streams the redis startup logs.
+6. `docker rm -f <id>` deletes the pod and closes the forwarder.
+
+`-it` (interactive + TTY), `docker exec`, `docker stop`/`start` round-trip, and Testcontainers compatibility are follow-up milestones.
+
+## Container name sanitization
+
+K8s pod names are RFC 1123: lowercase alphanumerics + `-`, max 63 chars. Docker `--name` is more permissive. Translation rule:
+
+- Lowercase the input.
+- Replace any character not in `[a-z0-9-]` with `-`.
+- Collapse consecutive `-`, trim leading/trailing `-`.
+- Truncate to 63 chars.
+- Store the original `--name` in annotation `docker-in-kubernetes.io/docker-name` so `docker ps`/`inspect` round-trip the user's chosen name.
+
 ## Non-goals (v1)
 
 - Image build/push/pull management (`docker build`, `docker pull`, `docker images`).
@@ -98,7 +121,7 @@ Real Docker Engine HTTP API, enough that the unmodified `docker` CLI works for:
 | `docker exec`                      | `POST /containers/{id}/exec`, `POST /exec/{id}/start`, `GET /exec/{id}/json`|
 | `docker version`, `docker info`    | `GET /version`, `GET /info` (static-ish responses)                          |
 
-API version: target `/v1.43` (Docker Engine 24.x). Accept any `/v1.x` prefix and route the same handlers.
+API version: advertise `1.43` (Docker Engine 24.0) via `/_ping` `Api-Version` header and `/version`. Accept any `/v1.x` prefix and route to the same handlers. This covers the modern `docker` CLI's negotiation floor and Testcontainers' `>= 1.24` minimum without obliging us to implement post-1.43 endpoints.
 
 ## Container ↔ Pod mapping
 
@@ -153,15 +176,22 @@ docker-in-kubernetes picks one of two forwarder backends at startup, based on wh
 
 | Docker verb | What docker-in-kubernetes does                                                              |
 | ----------- | -------------------------------------------------------------------------- |
-| `create`    | Build Pod spec, `POST` it. No start yet — Pod is created but state shown as `Created`. |
-| `start`     | Pod is already scheduled by k8s on create; here we wait for `Ready` and open port-forwards. |
+| `create`    | Build Pod spec, `POST` it. Pod is scheduled immediately. Wait for `Ready` and open port-forwards. |
+| `start`     | Same as `create`. If the container already exists and is running, no-op. (See note below.) |
 | `stop`      | `DELETE` Pod with graceful `terminationGracePeriodSeconds` (default 10s). Close forwards. |
 | `kill`      | `DELETE` Pod with `gracePeriodSeconds=0`. Close forwards.                  |
 | `rm`        | Same as `kill` if running; no-op if pod already gone.                      |
 | `logs`      | Stream from `GET /api/v1/namespaces/{ns}/pods/{name}/log?follow=true`.     |
 | `exec`      | `POST .../pods/{name}/exec` SPDY stream, proxied through Docker's exec protocol. |
 
-Note: Docker's `create` then `start` two-step doesn't map cleanly — k8s schedules on create. We accept this divergence; `docker run` (create+start) works as a user expects.
+**Lifecycle simplification (decided)**: k8s has no "stopped pod" state, so we collapse Docker's two-phase model:
+
+- `create` and `start` are equivalent: both schedule the pod and open forwards. `docker run` (create+start) works as expected.
+- `start` on an already-running container is a no-op.
+- `stop` deletes the pod — there is no "stopped" container. `docker ps -a` will not show stopped containers; once deleted, gone.
+- `start` on a previously-stopped (i.e., deleted) container returns an error: container not found.
+
+This trades fidelity for simplicity. Users who want restart semantics use `docker run` again.
 
 ## State
 
