@@ -13,7 +13,6 @@ const (
 	AnnotationDockerName = "docker-in-kubernetes.io/docker-name"
 	AnnotationLabels     = "docker-in-kubernetes.io/labels"
 
-	// DefaultProject is the project label value for plain `docker run`. Reserved
-	// for Docker Compose forward-compat.
+	// DefaultProject is reserved for Docker Compose forward-compat.
 	DefaultProject = "default"
 )

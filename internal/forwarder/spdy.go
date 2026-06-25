@@ -14,15 +14,14 @@ import (
 	"k8s.io/client-go/transport/spdy"
 )
 
-// SPDYForwarder is the local-mode backend: it tunnels via apiserver's
-// portforward subresource using SPDY.
+// SPDYForwarder tunnels via the apiserver's portforward subresource.
 type SPDYForwarder struct {
 	Clientset kubernetes.Interface
 	RESTCfg   *rest.Config
 	Logger    *slog.Logger
 }
 
-// NewSPDYForwarder wires the backend.
+// NewSPDYForwarder returns an SPDYForwarder.
 func NewSPDYForwarder(cs kubernetes.Interface, cfg *rest.Config, logger *slog.Logger) *SPDYForwarder {
 	if logger == nil {
 		logger = slog.Default()
@@ -30,8 +29,7 @@ func NewSPDYForwarder(cs kubernetes.Interface, cfg *rest.Config, logger *slog.Lo
 	return &SPDYForwarder{Clientset: cs, RESTCfg: cfg, Logger: logger}
 }
 
-// Open opens 127.0.0.1:HostPort -> pod:ContainerPort SPDY tunnels through the
-// apiserver. The tunnels are stopped on Handle.Close.
+// Open opens 127.0.0.1:HostPort -> pod:ContainerPort tunnels.
 func (f *SPDYForwarder) Open(ctx context.Context, namespace, pod string, mappings []Mapping) (Handle, error) {
 	ports := make([]string, 0, len(mappings))
 	for _, m := range mappings {
@@ -41,8 +39,6 @@ func (f *SPDYForwarder) Open(ctx context.Context, namespace, pod string, mapping
 		ports = append(ports, fmt.Sprintf("%d:%d", m.HostPort, m.ContainerPort))
 	}
 	if len(ports) == 0 {
-		// Nothing to forward; return a no-op handle so callers don't need a
-		// special case.
 		return &spdyHandle{}, nil
 	}
 
@@ -101,7 +97,7 @@ type spdyHandle struct {
 	isClosed bool
 }
 
-// Close stops the SPDY tunnel; safe to call multiple times.
+// Close is idempotent.
 func (h *spdyHandle) Close() error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -115,8 +111,7 @@ func (h *spdyHandle) Close() error {
 	return nil
 }
 
-// slogWriter is an io.Writer that forwards lines to slog. Used to capture the
-// chatter from k8s.io portforward without dumping it to stdout.
+// slogWriter sinks the portforward package's stdout/stderr writes into slog.
 type slogWriter struct {
 	logger *slog.Logger
 	level  slog.Level

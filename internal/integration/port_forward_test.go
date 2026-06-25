@@ -15,10 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestPortForwardCustomPortRoundTrip drives a non-standard container port
-// (12345, not redis's default 6379) and exercises a real bidirectional
-// payload — SET then GET — through the forwarder. Both ends use ports
-// nothing else on the host should be bound to.
+// Drives a non-standard container port and bidirectional payload through the forwarder.
 func TestPortForwardCustomPortRoundTrip(t *testing.T) {
 	env := newEnv(t)
 	name := "it-fwd-" + randSuffix()
@@ -38,9 +35,7 @@ func TestPortForwardCustomPortRoundTrip(t *testing.T) {
 	require.NoError(t, redisSetGet(t, hostPort, "dik-key", "dik-value"))
 }
 
-// redisSetGet opens one TCP connection to 127.0.0.1:hostPort, issues a
-// RESP-formatted SET followed by GET, and asserts the round-trip works.
-// Retries dialing for a few seconds while the forwarder warms up.
+// redisSetGet issues SET+GET via RESP and asserts the value round-trips.
 func redisSetGet(t *testing.T, hostPort int, key, value string) error {
 	t.Helper()
 	addr := "127.0.0.1:" + strconv.Itoa(hostPort)

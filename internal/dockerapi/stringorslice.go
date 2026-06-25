@@ -5,11 +5,10 @@ import (
 	"fmt"
 )
 
-// StringOrSlice handles Docker fields that the CLI may send as either a JSON
-// string or a JSON array of strings (Cmd, Entrypoint).
+// StringOrSlice decodes a JSON field that may be a string OR a []string (Cmd, Entrypoint).
 type StringOrSlice []string
 
-// UnmarshalJSON decodes a Docker field that may be either a string or a []string.
+// UnmarshalJSON accepts a string or a []string.
 func (s *StringOrSlice) UnmarshalJSON(data []byte) error {
 	if len(data) == 0 || string(data) == "null" {
 		*s = nil
@@ -38,7 +37,7 @@ func (s *StringOrSlice) UnmarshalJSON(data []byte) error {
 	return fmt.Errorf("StringOrSlice: unexpected JSON value %s", data)
 }
 
-// MarshalJSON emits the slice (or null for an empty one).
+// MarshalJSON emits []string, or null when empty.
 func (s StringOrSlice) MarshalJSON() ([]byte, error) {
 	if len(s) == 0 {
 		return []byte("null"), nil

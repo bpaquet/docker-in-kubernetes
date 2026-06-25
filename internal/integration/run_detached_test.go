@@ -18,13 +18,7 @@ import (
 	"github.com/bpaquet/docker-in-kubernetes/internal/k8s"
 )
 
-// TestDockerRunDetachedRedis is the headline use case: `docker run -d -p
-// HOST:6379 redis:7-alpine` brings up a pod, opens the local forwarder,
-// returns a container ID. redis-cli PING reaches the pod through the
-// forwarder. docker rm -f cleans everything up.
-//
-// Tight per-call timeouts so an interactive hang shows up immediately rather
-// than blocking the whole 60s package timeout.
+// Headline use case: redis comes up, PING goes through, rm -f cleans up.
 func TestDockerRunDetachedRedis(t *testing.T) {
 	env := newEnv(t)
 	name := "it-redis-" + randSuffix()
@@ -69,8 +63,6 @@ func freeLocalPort(t *testing.T) int {
 
 func redisPing(t *testing.T, hostPort int) error {
 	t.Helper()
-	// Forwarder may need a moment to start accepting connections after the
-	// pod becomes Ready; retry briefly.
 	deadline := time.Now().Add(10 * time.Second)
 	var lastErr error
 	for time.Now().Before(deadline) {

@@ -12,12 +12,12 @@ import (
 	"time"
 )
 
-// PodIPResolver returns the IP of a Pod for the TCP backend.
+// PodIPResolver looks up a Pod's IP.
 type PodIPResolver interface {
 	PodIP(ctx context.Context, namespace, pod string) (string, error)
 }
 
-// Dialer abstracts net.Dial so tests can substitute a fake.
+// Dialer is satisfied by *net.Dialer; the interface lets tests substitute fakes.
 type Dialer interface {
 	DialContext(ctx context.Context, network, address string) (net.Conn, error)
 }
@@ -29,14 +29,14 @@ func (n netDialer) DialContext(ctx context.Context, network, address string) (ne
 	return n.d.DialContext(ctx, network, address)
 }
 
-// TCPForwarder is the in-cluster backend: it dials Pod IPs directly.
+// TCPForwarder dials Pod IPs directly. Used in in-cluster mode.
 type TCPForwarder struct {
 	Resolver PodIPResolver
 	Dialer   Dialer
 	Logger   *slog.Logger
 }
 
-// NewTCPForwarder returns a TCPForwarder using net.Dialer.
+// NewTCPForwarder returns a TCPForwarder backed by net.Dialer.
 func NewTCPForwarder(resolver PodIPResolver, logger *slog.Logger) *TCPForwarder {
 	if logger == nil {
 		logger = slog.Default()
@@ -48,8 +48,7 @@ func NewTCPForwarder(resolver PodIPResolver, logger *slog.Logger) *TCPForwarder 
 	}
 }
 
-// Open opens a 127.0.0.1 listener for every mapping with a non-zero HostPort
-// and proxies traffic to podIP:ContainerPort.
+// Open opens 127.0.0.1:HostPort -> podIP:ContainerPort proxies.
 func (f *TCPForwarder) Open(ctx context.Context, namespace, pod string, mappings []Mapping) (Handle, error) {
 	podIP, err := f.Resolver.PodIP(ctx, namespace, pod)
 	if err != nil {
@@ -125,7 +124,7 @@ func (h *tcpHandle) closed() bool {
 	return h.isClosed
 }
 
-// Close stops accepting on every listener; safe to call multiple times.
+// Close is idempotent.
 func (h *tcpHandle) Close() error {
 	h.mu.Lock()
 	if h.isClosed {

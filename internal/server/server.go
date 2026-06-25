@@ -17,14 +17,13 @@ import (
 	"github.com/bpaquet/docker-in-kubernetes/internal/k8s"
 )
 
-// APIVersion is the Docker Engine API version we advertise.
-// MinAPIVersion is the floor reported in /version.
+// Docker Engine API version we advertise.
 const (
 	APIVersion    = "1.43"
 	MinAPIVersion = "1.24"
 )
 
-// PodStore is the subset of internal/k8s.Pods the server handlers need.
+// PodStore is the subset of *k8s.Pods the handlers use.
 type PodStore interface {
 	Create(ctx context.Context, pod *corev1.Pod) (*corev1.Pod, error)
 	Delete(ctx context.Context, name string, grace time.Duration) error
@@ -36,12 +35,12 @@ type PodStore interface {
 	Namespace() string
 }
 
-// PortForwarder is the subset of internal/forwarder.Forwarder used here.
+// PortForwarder is the subset of forwarder.Forwarder the handlers use.
 type PortForwarder interface {
 	Open(ctx context.Context, namespace, pod string, mappings []forwarder.Mapping) (forwarder.Handle, error)
 }
 
-// Config configures the HTTP handler returned by New.
+// Config configures New.
 type Config struct {
 	DaemonVersion string
 	Logger        *slog.Logger
@@ -50,7 +49,7 @@ type Config struct {
 	Forwards      *forwarder.Registry
 }
 
-// New returns the HTTP handler implementing the Docker Engine API subset.
+// New returns the HTTP handler.
 func New(cfg Config) http.Handler {
 	logger := cfg.Logger
 	if logger == nil {
@@ -87,8 +86,7 @@ func stripVersionPrefix(next http.Handler) http.Handler {
 			return
 		}
 		end := loc[1]
-		// Boundary must be '/' or end-of-string; otherwise "/v1.43abc" would
-		// be wrongly recognized as a version prefix.
+		// Reject e.g. "/v1.43abc" — the version must be followed by '/' or EOL.
 		if end < len(path) && path[end] != '/' {
 			next.ServeHTTP(w, r)
 			return
@@ -110,7 +108,7 @@ type statusRecorder struct {
 	status int
 }
 
-// WriteHeader captures the status before delegating, for the request logger.
+// WriteHeader records the status for logRequests.
 func (s *statusRecorder) WriteHeader(code int) {
 	s.status = code
 	s.ResponseWriter.WriteHeader(code)

@@ -11,10 +11,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Each test below verifies one CreateRequest field flows through the daemon
-// to the pod spec by having the container echo something we can observe via
-// `docker logs`.
-
 func TestCreateEnvVar(t *testing.T) {
 	env := newEnv(t)
 	name := "it-env-" + randSuffix()
@@ -82,9 +78,6 @@ func TestCreateWorkingDir(t *testing.T) {
 	requireLogsContain(t, env, name, dir)
 }
 
-// Error path: an entrypoint pointing at a nonexistent binary makes kubelet
-// fail to start the container; our WaitForReady should surface that as a
-// non-zero docker-run exit instead of hanging.
 func TestCreateEntrypointMissingBinaryFails(t *testing.T) {
 	env := newEnv(t)
 	name := "it-bad-ep-" + randSuffix()
@@ -101,9 +94,7 @@ func TestCreateEntrypointMissingBinaryFails(t *testing.T) {
 	assert.Less(t, elapsed, 90*time.Second, "should fail well before the 90s docker timeout")
 }
 
-// requireLogsContain polls `docker logs` until the container has produced the
-// expected substring. The container may not have written stdout yet when the
-// daemon's /create returns, since Ready merely means started.
+// requireLogsContain polls `docker logs` until want appears (or we give up).
 func requireLogsContain(t *testing.T, env *testEnv, id, want string) {
 	t.Helper()
 	require.Eventually(t, func() bool {

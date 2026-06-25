@@ -26,12 +26,10 @@ const (
 	defaultReadyTimeout = 30 * time.Second
 )
 
-// ErrNotFound is returned by Pods operations when the pod does not exist or
-// is not owned by this daemon.
+// ErrNotFound covers both "no such pod" and "pod is not managed by us".
 var ErrNotFound = errors.New("pod not found")
 
-// Pods provides the daemon's container-as-pod operations against a single
-// namespace.
+// Pods is the daemon's pod CRUD against one namespace.
 type Pods struct {
 	cs           kubernetes.Interface
 	namespace    string
@@ -39,7 +37,7 @@ type Pods struct {
 	readyTimeout time.Duration
 }
 
-// NewPods wires a Pods store with default poll/timeout values.
+// NewPods returns a Pods bound to namespace.
 func NewPods(cs kubernetes.Interface, namespace string) *Pods {
 	return &Pods{
 		cs:           cs,
@@ -49,16 +47,16 @@ func NewPods(cs kubernetes.Interface, namespace string) *Pods {
 	}
 }
 
-// Namespace returns the namespace this Pods instance writes to.
+// Namespace returns the bound namespace.
 func (p *Pods) Namespace() string { return p.namespace }
 
-// SetPollInterval is used by tests to make WaitForReady tight.
+// SetPollInterval tightens WaitForReady polling in tests.
 func (p *Pods) SetPollInterval(d time.Duration) { p.pollInterval = d }
 
-// SetReadyTimeout overrides the default 30s ready timeout.
+// SetReadyTimeout overrides WaitForReady's per-call timeout.
 func (p *Pods) SetReadyTimeout(d time.Duration) { p.readyTimeout = d }
 
-// Create posts the pod, returning the server's view (with ResourceVersion etc.).
+// Create posts the pod.
 func (p *Pods) Create(ctx context.Context, pod *corev1.Pod) (*corev1.Pod, error) {
 	created, err := p.cs.CoreV1().Pods(p.namespace).Create(ctx, pod, metav1.CreateOptions{})
 	if err != nil {
@@ -67,8 +65,7 @@ func (p *Pods) Create(ctx context.Context, pod *corev1.Pod) (*corev1.Pod, error)
 	return created, nil
 }
 
-// Delete removes the pod. grace == 0 means immediate (no SIGTERM grace).
-// Missing pods are reported as ErrNotFound.
+// Delete removes the pod (grace=0 skips SIGTERM). Returns ErrNotFound if missing.
 func (p *Pods) Delete(ctx context.Context, name string, grace time.Duration) error {
 	opts := metav1.DeleteOptions{}
 	if grace >= 0 {
@@ -84,8 +81,7 @@ func (p *Pods) Delete(ctx context.Context, name string, grace time.Duration) err
 	return nil
 }
 
-// Get fetches one pod by name. Returns ErrNotFound if it doesn't exist or
-// isn't ours (missing the managed label).
+// Get fetches one managed pod by name. ErrNotFound if missing or unmanaged.
 func (p *Pods) Get(ctx context.Context, name string) (*corev1.Pod, error) {
 	pod, err := p.cs.CoreV1().Pods(p.namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
@@ -111,22 +107,13 @@ func (p *Pods) List(ctx context.Context) ([]corev1.Pod, error) {
 	return list.Items, nil
 }
 
-// FindByID resolves a docker CLI reference to a managed pod. References
-// accepted, in order:
-//
-//   - the pod name (RFC 1123, what users see in `docker ps` NAMES column),
-//   - the original `--name` value (stored in the docker-name annotation),
-//   - the full 64-hex container ID (sha256 of namespace/name),
-//   - the 12-char short ID.
-//
-// Returns ErrNotFound on no match.
+// FindByID resolves a pod name, --name annotation, full ID, or short ID.
 func (p *Pods) FindByID(ctx context.Context, ref string) (*corev1.Pod, error) {
 	if ref == "" {
 		return nil, ErrNotFound
 	}
-	// Fast path: direct lookup by pod name. Suppress errors and fall through
-	// to the label-selector scan so an invalid-as-k8s-name input (e.g. a
-	// 64-hex container ID) still resolves below.
+	// Direct Get errors (incl. invalid-as-k8s-name for 64-hex IDs) fall
+	// through to the label-selector scan below.
 	if pod, err := p.Get(ctx, ref); err == nil {
 		return pod, nil
 	}
@@ -146,8 +133,7 @@ func (p *Pods) FindByID(ctx context.Context, ref string) (*corev1.Pod, error) {
 	return nil, ErrNotFound
 }
 
-// ImagePullFailedError signals a fatal container-state reason that should
-// surface to `docker run` as a non-zero exit.
+// ImagePullFailedError is the fail-fast error surfaced by WaitForReady.
 type ImagePullFailedError struct {
 	Reason  string
 	Message string
@@ -160,8 +146,7 @@ func (e *ImagePullFailedError) Error() string {
 	return e.Reason
 }
 
-// WaitForReady blocks until pod `name` is Ready, or a fail-fast container
-// state appears, or the per-call timeout elapses. ctx cancellation is honored.
+// WaitForReady blocks until Ready, a fatal container state, or the timeout.
 func (p *Pods) WaitForReady(ctx context.Context, name string) error {
 	deadline := time.Now().Add(p.readyTimeout)
 	for {
@@ -240,8 +225,6 @@ func (p *Pods) PodIP(ctx context.Context, namespace, name string) (string, error
 	return pod.Status.PodIP, nil
 }
 
-// fatalContainerWaitingState returns (reason, message) when any container is
-// waiting in one of the unrecoverable image-pull / setup states.
 func fatalContainerWaitingState(pod *corev1.Pod) (string, string) {
 	for _, cs := range pod.Status.ContainerStatuses {
 		if cs.State.Waiting == nil {

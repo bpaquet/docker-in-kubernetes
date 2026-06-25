@@ -1,10 +1,4 @@
-// Package forwarder bridges localhost ports on the daemon host to container
-// ports on Pods. Two backends:
-//
-//   - SPDY:  apiserver port-forward (local mode, daemon on a laptop)
-//   - TCP:   direct dial to PodIP   (in-cluster mode, daemon is a Pod itself)
-//
-// Choose at startup with PickBackend based on os.Getenv("KUBERNETES_SERVICE_HOST").
+// Package forwarder bridges host ports to Pod ports (SPDY local, TCP in-cluster).
 package forwarder
 
 import (
@@ -13,25 +7,23 @@ import (
 	"sync"
 )
 
-// Mapping is one host -> container port pair. Both are 16-bit unsigned.
+// Mapping is one host -> container port pair.
 type Mapping struct {
 	HostPort      uint16
 	ContainerPort uint16
 }
 
-// Handle owns the goroutines and listeners for one Open() call. Close stops
-// all of them and is idempotent.
+// Handle stops every listener/goroutine opened by one Open call. Idempotent.
 type Handle interface {
 	Close() error
 }
 
-// Forwarder is the contract both backends satisfy.
+// Forwarder is the SPDY/TCP backend interface.
 type Forwarder interface {
 	Open(ctx context.Context, namespace, pod string, mappings []Mapping) (Handle, error)
 }
 
-// Registry tracks open Handles by container ID so the HTTP layer can close
-// them on rm/kill/stop without holding a per-request goroutine map.
+// Registry tracks open Handles by container ID.
 type Registry struct {
 	mu      sync.Mutex
 	handles map[string]Handle
@@ -42,7 +34,7 @@ func NewRegistry() *Registry {
 	return &Registry{handles: make(map[string]Handle)}
 }
 
-// Set replaces the handle bound to id, closing any existing one.
+// Set binds h to id, closing any previously-bound handle.
 func (r *Registry) Set(id string, h Handle) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -72,9 +64,8 @@ func (r *Registry) Has(id string) bool {
 	return ok
 }
 
-// closeAll drains the registry; closes returned through errors.Join so partial
-// failures aren't hidden.
-func (r *Registry) closeAll() error {
+// Shutdown closes every tracked Handle. Errors are joined.
+func (r *Registry) Shutdown() error {
 	r.mu.Lock()
 	prev := r.handles
 	r.handles = make(map[string]Handle)
@@ -88,6 +79,3 @@ func (r *Registry) closeAll() error {
 	}
 	return errors.Join(errs...)
 }
-
-// Shutdown closes every tracked Handle.
-func (r *Registry) Shutdown() error { return r.closeAll() }

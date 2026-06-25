@@ -11,8 +11,7 @@ import (
 	"github.com/bpaquet/docker-in-kubernetes/internal/sockutil"
 )
 
-// shortTempPath chdirs to a temp dir and returns a short relative socket path.
-// Needed because darwin's sun_path is 104 bytes and TempDir() is much longer.
+// shortTempPath: short path fitting darwin's 104-byte sun_path.
 func shortTempPath(t *testing.T, name string) string {
 	t.Helper()
 	t.Chdir(t.TempDir())

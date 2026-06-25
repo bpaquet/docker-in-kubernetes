@@ -10,13 +10,9 @@ import (
 
 const maxK8sNameLen = 63
 
-// nonAlnum matches any run of characters that are not lowercase alphanumeric.
-// It collapses both invalid characters and existing separators into a single
-// dash in one pass.
 var nonAlnum = regexp.MustCompile(`[^a-z0-9]+`)
 
-// SanitizeName converts a Docker container name to a valid RFC 1123 pod name.
-// If the input is empty, a random name like "dik-<hex8>" is returned.
+// SanitizeName converts a Docker name to RFC 1123. Empty input returns a random name.
 func SanitizeName(input string) (string, error) {
 	if input == "" {
 		return randomName(), nil
@@ -32,9 +28,7 @@ func SanitizeName(input string) (string, error) {
 	return out, nil
 }
 
-// GeneratedName returns a deterministic-looking but random pod name based on
-// the image (e.g. "redis:7" -> "dik-redis-<hex6>"). Used when no --name is
-// provided.
+// GeneratedName returns "dik-<image-base>-<hex6>" for use when --name is empty.
 func GeneratedName(image string) string {
 	base := imageBase(image)
 	clean, err := SanitizeName("dik-" + base)
@@ -49,8 +43,7 @@ func GeneratedName(image string) string {
 	return full
 }
 
-// imageBase extracts the image name without registry path or tag/digest.
-// "registry.example.com/library/redis:7.2" -> "redis"
+// imageBase: "registry.example.com/library/redis:7.2" -> "redis".
 func imageBase(image string) string {
 	s := image
 	if i := strings.LastIndex(s, "/"); i >= 0 {
@@ -69,8 +62,6 @@ func randomName() string {
 func randomSuffix(n int) string {
 	b := make([]byte, (n+1)/2)
 	if _, err := rand.Read(b); err != nil {
-		// crypto/rand cannot fail on the platforms we support; if it does
-		// the process is hosed anyway.
 		panic(fmt.Sprintf("crypto/rand: %v", err))
 	}
 	return hex.EncodeToString(b)[:n]

@@ -11,9 +11,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestDockerRunWithoutDetachFailsFast confirms non-detached `docker run` is
-// rejected at /containers/create with our "use -d" message rather than
-// surfacing the docker CLI's cryptic "unable to upgrade to tcp" error.
 func TestDockerRunWithoutDetachFailsFast(t *testing.T) {
 	env := newEnv(t)
 	name := "it-noattach-" + randSuffix()
