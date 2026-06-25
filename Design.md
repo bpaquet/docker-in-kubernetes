@@ -66,6 +66,48 @@ Two fundamental blockers:
 
 `-it` (interactive + TTY), `docker exec`, `docker stop`/`start` round-trip, and Testcontainers compatibility are follow-up milestones.
 
+## `docker run -d` blocking semantics
+
+`docker run -d` blocks until the container is fully usable — closer to Docker's UX than a fire-and-forget. Sequence:
+
+1. `POST` the Pod.
+2. Watch pod events. **Fail fast** if the pod enters `ImagePullBackOff` / `ErrImagePull` / `CreateContainerError` — return a non-zero error to the CLI (with the k8s reason in the message). 30s overall timeout as backstop.
+3. Wait for `Pod.Status.Phase == Running` **and** `condition Ready == True`.
+4. Open the port-forwarder(s).
+5. Return the container ID to the CLI.
+
+Non-detached `docker run` (no `-d`) is **not supported in v1** — the daemon returns a clear "interactive run not supported, use -d" error. Reason: requires HTTP hijack + attach stream plumbing that belongs in the same milestone as `docker exec` / `-it`.
+
+## Container ID
+
+64-hex Docker-compatible ID, derived deterministically from the pod identity:
+
+```
+id = sha256("<namespace>/<podname>")  // 64 hex chars
+shortID = id[:12]                     // matches Docker CLI display
+```
+
+Stable across the pod's lifetime, regenerable from `ps` with no daemon state. Reverse lookup (`id → pod`) is a label-selector list + filter on the daemon side.
+
+## Quality bar
+
+This is production-grade code, not a prototype.
+
+- **Unit tests** on every package. Table-driven where natural. `testify/require` for assertions.
+- **K8s interactions** tested with `k8s.io/client-go/kubernetes/fake` — no hand-rolled mocks at the wrapper layer.
+- **Pod-spec builder, name sanitization, container ID derivation, port-binding parsing** are pure functions — fully unit-testable, no I/O.
+- **End-to-end tests** against a real cluster cover the redis happy path and the failure modes the design promises (image pull failure → `docker run` exits non-zero, port already bound, missing namespace).
+- **CI**: `gofmt -d`, `go vet`, `golangci-lint run`, `go test ./...` on every push. CI must be green before merge.
+- **No silent errors**. Wrap with `%w`; surface k8s reasons in messages returned to the CLI.
+- **Coverage** is a side-effect of "test the things that matter", not a target. Don't pad with trivial getter tests.
+
+## Toolchain
+
+- **Go**: 1.22 (stdlib `log/slog`, `slices`, `maps`).
+- **HTTP server**: stdlib `net/http`. No router framework.
+- **Logging**: `log/slog` with a text handler; level via `--log-level` flag (default `info`).
+- **K8s client**: `k8s.io/client-go` latest minor matching the target cluster (pinned in `go.mod` once cluster version is known).
+
 ## Container name sanitization
 
 K8s pod names are RFC 1123: lowercase alphanumerics + `-`, max 63 chars. Docker `--name` is more permissive. Translation rule:

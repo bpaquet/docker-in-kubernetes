@@ -1,0 +1,19 @@
+# Binaries
+/docker-in-kubernetes
+/bin/
+*.exe
+*.test
+*.out
+
+# Local environment / credentials — never commit
+.env
+.env.*
+kubeconfig
+*.kubeconfig
+*.pem
+*.key
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
