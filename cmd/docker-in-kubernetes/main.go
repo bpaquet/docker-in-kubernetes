@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/bpaquet/docker-in-kubernetes/internal/forwarder"
+	"github.com/bpaquet/docker-in-kubernetes/internal/k8s"
 	"github.com/bpaquet/docker-in-kubernetes/internal/logutil"
 	"github.com/bpaquet/docker-in-kubernetes/internal/server"
 	"github.com/bpaquet/docker-in-kubernetes/internal/sockutil"
@@ -30,12 +32,40 @@ func main() {
 func run() error {
 	socketPath := flag.String("socket", "/tmp/docker-in-kubernetes.sock", "UNIX socket path to listen on")
 	logLevel := flag.String("log-level", "info", "log level: debug, info, warn, error")
+	namespace := flag.String("namespace", "", "Kubernetes namespace to manage pods in (required)")
+	kubeconfig := flag.String("kubeconfig", "", "path to kubeconfig (defaults to KUBECONFIG env, then ~/.kube/config)")
+	kubeContext := flag.String("context", "", "kubeconfig context to use (defaults to current-context)")
 	flag.Parse()
+
+	if *namespace == "" {
+		return fmt.Errorf("--namespace is required")
+	}
 
 	logger, err := logutil.New(os.Stderr, *logLevel)
 	if err != nil {
 		return err
 	}
+
+	conn, err := k8s.Connect(k8s.ClientConfig{
+		KubeconfigPath: *kubeconfig,
+		Context:        *kubeContext,
+	})
+	if err != nil {
+		return fmt.Errorf("kubernetes connect: %w", err)
+	}
+	logger.Info("kubernetes connected", "mode", conn.Mode.String(), "namespace", *namespace)
+
+	pods := k8s.NewPods(conn.Clientset, *namespace)
+
+	var fw server.PortForwarder
+	switch conn.Mode {
+	case k8s.ModeInCluster:
+		fw = forwarder.NewTCPForwarder(pods, logger)
+	default:
+		fw = forwarder.NewSPDYForwarder(conn.Clientset, conn.REST, logger)
+	}
+
+	registry := forwarder.NewRegistry()
 
 	listener, err := sockutil.ListenUnix(*socketPath)
 	if err != nil {
@@ -43,7 +73,13 @@ func run() error {
 	}
 
 	httpServer := &http.Server{
-		Handler:           server.New(server.Config{DaemonVersion: version, Logger: logger}),
+		Handler: server.New(server.Config{
+			DaemonVersion: version,
+			Logger:        logger,
+			Pods:          pods,
+			Forwarder:     fw,
+			Forwards:      registry,
+		}),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -70,6 +106,9 @@ func run() error {
 	defer cancel()
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		logger.Warn("graceful shutdown failed", "err", err)
+	}
+	if err := registry.Shutdown(); err != nil {
+		logger.Warn("forwarder shutdown failed", "err", err)
 	}
 	return nil
 }

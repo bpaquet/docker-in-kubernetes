@@ -2,11 +2,19 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"regexp"
 	"runtime"
+	"time"
+
+	corev1 "k8s.io/api/core/v1"
+
+	"github.com/bpaquet/docker-in-kubernetes/internal/forwarder"
+	"github.com/bpaquet/docker-in-kubernetes/internal/k8s"
 )
 
 // APIVersion is the Docker Engine API version we advertise.
@@ -16,10 +24,30 @@ const (
 	MinAPIVersion = "1.24"
 )
 
+// PodStore is the subset of internal/k8s.Pods the server handlers need.
+type PodStore interface {
+	Create(ctx context.Context, pod *corev1.Pod) (*corev1.Pod, error)
+	Delete(ctx context.Context, name string, grace time.Duration) error
+	Get(ctx context.Context, name string) (*corev1.Pod, error)
+	List(ctx context.Context) ([]corev1.Pod, error)
+	FindByID(ctx context.Context, id string) (*corev1.Pod, error)
+	WaitForReady(ctx context.Context, name string) error
+	StreamLogs(ctx context.Context, name string, opts k8s.LogOptions) (io.ReadCloser, error)
+	Namespace() string
+}
+
+// PortForwarder is the subset of internal/forwarder.Forwarder used here.
+type PortForwarder interface {
+	Open(ctx context.Context, namespace, pod string, mappings []forwarder.Mapping) (forwarder.Handle, error)
+}
+
 // Config configures the HTTP handler returned by New.
 type Config struct {
 	DaemonVersion string
 	Logger        *slog.Logger
+	Pods          PodStore
+	Forwarder     PortForwarder
+	Forwards      *forwarder.Registry
 }
 
 // New returns the HTTP handler implementing the Docker Engine API subset.
@@ -33,12 +61,19 @@ func New(cfg Config) http.Handler {
 	mux.HandleFunc("GET /_ping", handlePing)
 	mux.HandleFunc("HEAD /_ping", handlePing)
 	mux.HandleFunc("GET /version", handleVersion(cfg.DaemonVersion))
+	mux.HandleFunc("GET /info", handleInfo(cfg.DaemonVersion))
 
-	return chain(
-		mux,
-		stripVersionPrefix,
-		logRequests(logger),
-	)
+	if cfg.Pods != nil && cfg.Forwarder != nil && cfg.Forwards != nil {
+		ch := &containerHandlers{
+			pods:      cfg.Pods,
+			forwarder: cfg.Forwarder,
+			registry:  cfg.Forwards,
+			logger:    logger,
+		}
+		ch.register(mux)
+	}
+
+	return chain(mux, stripVersionPrefix, logRequests(logger))
 }
 
 var versionPrefix = regexp.MustCompile(`^/v[0-9]+\.[0-9]+`)
