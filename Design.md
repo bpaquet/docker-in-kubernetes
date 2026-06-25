@@ -103,7 +103,7 @@ This is production-grade code, not a prototype.
 
 ## Toolchain
 
-- **Go**: 1.22 (stdlib `log/slog`, `slices`, `maps`).
+- **Go**: 1.24 (stdlib `log/slog`, `slices`, `maps`, `t.Context()`).
 - **HTTP server**: stdlib `net/http`. No router framework.
 - **Logging**: `log/slog` with a text handler; level via `--log-level` flag (default `info`).
 - **K8s client**: `k8s.io/client-go` latest minor matching the target cluster (pinned in `go.mod` once cluster version is known).

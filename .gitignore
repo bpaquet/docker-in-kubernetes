@@ -8,6 +8,8 @@
 # Local environment / credentials — never commit
 .env
 .env.*
+.mise.local.toml
+mise.local.toml
 kubeconfig
 *.kubeconfig
 *.pem
