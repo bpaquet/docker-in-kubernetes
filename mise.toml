@@ -59,6 +59,6 @@ run = "kind delete cluster --name dik-test"
 
 [tasks.integration-test]
 description = "Run integration tests against the dik-test kind cluster (must be up)"
-# Tight overall timeout: if a single test wedges we want to know fast, not
-# after 5 minutes.
-run = 'KUBECONFIG="$PWD/tmp/integration-kubeconfig" go test -tags=integration -count=1 -timeout 60s ./internal/integration/...'
+# -v on by default: each test does network work and may take seconds; per-test
+# pass/fail lines make CI logs intelligible.
+run = 'KUBECONFIG="$PWD/tmp/integration-kubeconfig" go test -tags=integration -count=1 -v -timeout 10m ./internal/integration/...'
