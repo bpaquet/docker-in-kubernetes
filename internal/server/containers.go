@@ -52,6 +52,10 @@ func (c *containerHandlers) create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Image is required")
 		return
 	}
+	if req.AttachStdin || req.AttachStdout || req.AttachStderr || req.OpenStdin || req.Tty {
+		writeError(w, http.StatusBadRequest, "interactive run is not supported by docker-in-kubernetes; use -d (detached)")
+		return
+	}
 
 	dockerName := r.URL.Query().Get("name")
 	built, err := podspec.Build(podspec.BuildInput{

@@ -16,6 +16,10 @@ type CreateRequest struct {
 	ExposedPorts map[string]struct{} `json:"ExposedPorts,omitempty"`
 	HostConfig   HostConfig          `json:"HostConfig,omitempty"`
 	Tty          bool                `json:"Tty,omitempty"`
+	AttachStdin  bool                `json:"AttachStdin,omitempty"`
+	AttachStdout bool                `json:"AttachStdout,omitempty"`
+	AttachStderr bool                `json:"AttachStderr,omitempty"`
+	OpenStdin    bool                `json:"OpenStdin,omitempty"`
 }
 
 // HostConfig contains host-level container options.
