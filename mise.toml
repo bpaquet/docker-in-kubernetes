@@ -1,6 +1,8 @@
 [tools]
-go = "1.24"
-golangci-lint = "2.1.6"
+go = "1.26"
+golangci-lint = "2.12.2"
+kind = "0.32.0"
+kubectl = "1.32"
 
 [tasks.build]
 description = "Build the docker-in-kubernetes binary into ./bin"
@@ -34,3 +36,29 @@ run = "./bin/docker-in-kubernetes --socket /tmp/docker-in-kubernetes.sock"
 [tasks.ci]
 description = "Run the same checks CI runs (fmt, vet, lint, test)"
 depends = ["fmt", "vet", "lint", "test"]
+
+# --- Integration testing against a kind cluster -----------------------------
+# Lives entirely under ./tmp and a dedicated kind cluster named `dik-test`.
+# Never touches ~/.kube/config.
+
+[tasks.integration-up]
+description = "Create the dik-test kind cluster (or refresh kubeconfig if it already exists) and ensure the docker-in-kubernetes namespace"
+run = """
+mkdir -p tmp
+if kind get clusters 2>/dev/null | grep -q '^dik-test$'; then
+  kind export kubeconfig --name dik-test --kubeconfig ./tmp/integration-kubeconfig
+else
+  kind create cluster --name dik-test --kubeconfig ./tmp/integration-kubeconfig
+fi
+KUBECONFIG=./tmp/integration-kubeconfig kubectl create namespace docker-in-kubernetes --dry-run=client -o yaml | KUBECONFIG=./tmp/integration-kubeconfig kubectl apply -f -
+"""
+
+[tasks.integration-down]
+description = "Delete the dik-test kind cluster"
+run = "kind delete cluster --name dik-test"
+
+[tasks.integration-test]
+description = "Run integration tests against the dik-test kind cluster (must be up)"
+# Tight overall timeout: if a single test wedges we want to know fast, not
+# after 5 minutes.
+run = 'KUBECONFIG="$PWD/tmp/integration-kubeconfig" go test -tags=integration -count=1 -timeout 60s ./internal/integration/...'
