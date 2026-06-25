@@ -105,29 +105,34 @@ func (c *containerHandlers) start(w http.ResponseWriter, r *http.Request) {
 
 // wait: POST /containers/{id}/wait?condition=...
 //
-// The docker CLI subscribes here BEFORE issuing /start so it can detect
-// immediate startup failures; it expects the response headers to arrive right
-// away (the body comes when the container exits). If we don't flush headers
-// early, the CLI's wait subscription blocks and `docker run -d` never
-// returns.
+// The docker CLI's `docker run -d` calls /wait with condition=next-exit and
+// blocks reading the body until the wait subscription "completes", even after
+// the ID is printed. Blocking indefinitely (as real moby does) hangs the CLI.
+//
+// For now we short-circuit next-exit with an immediate {"StatusCode": 0}: the
+// CLI's wait goroutine completes, `docker run -d` returns, and no real Docker
+// command we implement loses information (we don't support --rm yet, and
+// `docker wait` (default condition=not-running) still blocks correctly).
+//
+// TODO: revisit once we understand why this CLI doesn't issue /start before
+// /wait. The implicit-start in /create may be confusing the CLI's runRun
+// sequence.
 func (c *containerHandlers) wait(w http.ResponseWriter, r *http.Request) {
 	pod, ok := c.resolvePod(w, r)
 	if !ok {
 		return
 	}
-	setDockerHeaders(w)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if f, ok := w.(http.Flusher); ok {
-		f.Flush()
+	condition := r.URL.Query().Get("condition")
+	if condition == "next-exit" {
+		writeJSON(w, http.StatusOK, dockerapi.WaitResponse{StatusCode: 0})
+		return
 	}
 	exit, err := c.waitForExit(r.Context(), pod.Name)
 	if err != nil {
-		// Headers already sent; nothing meaningful to return. Closing the
-		// connection signals the client.
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	_ = json.NewEncoder(w).Encode(dockerapi.WaitResponse{StatusCode: exit})
+	writeJSON(w, http.StatusOK, dockerapi.WaitResponse{StatusCode: exit})
 }
 
 func (c *containerHandlers) waitForExit(ctx context.Context, name string) (int64, error) {
@@ -156,7 +161,6 @@ func exitCodeFromPod(pod *corev1.Pod) (int64, bool) {
 	case corev1.PodSucceeded:
 		return 0, true
 	case corev1.PodFailed:
-		// Prefer the container's actual exit code if available.
 		for _, cs := range pod.Status.ContainerStatuses {
 			if cs.State.Terminated != nil {
 				return int64(cs.State.Terminated.ExitCode), true

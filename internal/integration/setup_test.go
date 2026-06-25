@@ -24,6 +24,34 @@ import (
 
 const testNamespace = "docker-in-kubernetes"
 
+// TestMain wipes any managed pods left over from a previous run before any
+// test executes, so TestDockerPsEmpty and friends start from a clean slate.
+func TestMain(m *testing.M) {
+	wipeStalePods()
+	os.Exit(m.Run())
+}
+
+func wipeStalePods() {
+	kubeconfig := os.Getenv("KUBECONFIG")
+	if kubeconfig == "" {
+		return
+	}
+	conn, err := k8s.Connect(k8s.ClientConfig{KubeconfigPath: kubeconfig})
+	if err != nil {
+		return
+	}
+	pods := k8s.NewPods(conn.Clientset, testNamespace)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	list, err := pods.List(ctx)
+	if err != nil {
+		return
+	}
+	for i := range list {
+		_ = pods.Delete(ctx, list[i].Name, 0)
+	}
+}
+
 type testEnv struct {
 	Pods       *k8s.Pods
 	Registry   *forwarder.Registry
