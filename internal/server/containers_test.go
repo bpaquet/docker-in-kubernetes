@@ -253,14 +253,14 @@ func TestKillDeletesPodAndClosesForwarder(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestDeleteMissingContainerReturns404(t *testing.T) {
+func TestDeleteMissingContainerIsNoOp(t *testing.T) {
 	ts, _, _ := newTestHandler(t)
 
 	req, _ := http.NewRequest(http.MethodDelete, ts.URL+"/v1.43/containers/abc", nil)
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	defer resp.Body.Close()
-	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	assert.Equal(t, http.StatusNoContent, resp.StatusCode)
 }
 
 func TestInfo(t *testing.T) {

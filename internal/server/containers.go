@@ -182,15 +182,34 @@ func (c *containerHandlers) kill(w http.ResponseWriter, r *http.Request) {
 }
 
 // delete: DELETE /containers/{id}?force=...
+//
+// Per Design.md, rm is a no-op if the pod is already gone: this lets
+// `docker stop x && docker rm x` succeed even though our stop deleted
+// the pod and an inspect would 404.
 func (c *containerHandlers) delete(w http.ResponseWriter, r *http.Request) {
-	c.terminate(w, r, 0)
+	id := r.PathValue("id")
+	pod, err := c.pods.FindByID(r.Context(), id)
+	if errors.Is(err, k8s.ErrNotFound) {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	c.deletePod(w, r, pod, 0)
 }
 
+// terminate is the kill/stop path: pod must exist (404 otherwise).
 func (c *containerHandlers) terminate(w http.ResponseWriter, r *http.Request, grace time.Duration) {
 	pod, ok := c.resolvePod(w, r)
 	if !ok {
 		return
 	}
+	c.deletePod(w, r, pod, grace)
+}
+
+func (c *containerHandlers) deletePod(w http.ResponseWriter, r *http.Request, pod *corev1.Pod, grace time.Duration) {
 	id := podspec.ContainerID(pod.Namespace, pod.Name)
 	if err := c.registry.Close(id); err != nil {
 		c.logger.Warn("close forwarder failed", "id", id, "err", err)
