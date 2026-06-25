@@ -121,6 +121,18 @@ type ErrorResponse struct {
 	Message string `json:"message"`
 }
 
+// WaitResponse is returned by POST /containers/{id}/wait once the wait
+// condition is met.
+type WaitResponse struct {
+	StatusCode int64      `json:"StatusCode"`
+	Error      *WaitError `json:"Error,omitempty"`
+}
+
+// WaitError is the optional Error sub-object in WaitResponse.
+type WaitError struct {
+	Message string `json:"Message"`
+}
+
 // InfoResponse is a minimal /info subset; daemon identification is enough for
 // the docker CLI not to bail out.
 type InfoResponse struct {

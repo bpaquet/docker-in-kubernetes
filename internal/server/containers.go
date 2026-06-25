@@ -35,6 +35,7 @@ func (c *containerHandlers) register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /containers/{id}/start", c.start)
 	mux.HandleFunc("POST /containers/{id}/stop", c.stop)
 	mux.HandleFunc("POST /containers/{id}/kill", c.kill)
+	mux.HandleFunc("POST /containers/{id}/wait", c.wait)
 	mux.HandleFunc("DELETE /containers/{id}", c.delete)
 	mux.HandleFunc("GET /containers/{id}/json", c.inspect)
 	mux.HandleFunc("GET /containers/{id}/logs", c.logs)
@@ -100,6 +101,61 @@ func (c *containerHandlers) start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// wait: POST /containers/{id}/wait?condition=...
+// Blocks until the pod is no longer Running, then returns an exit code.
+// The docker CLI calls this even after `docker run -d` to detect immediate
+// startup failures, so a 404 here surfaces as a spurious "error waiting for
+// container" line after the (successful) container ID.
+func (c *containerHandlers) wait(w http.ResponseWriter, r *http.Request) {
+	pod, ok := c.resolvePod(w, r)
+	if !ok {
+		return
+	}
+	exit, err := c.waitForExit(r.Context(), pod.Name)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, dockerapi.WaitResponse{StatusCode: exit})
+}
+
+func (c *containerHandlers) waitForExit(ctx context.Context, name string) (int64, error) {
+	const poll = 500 * time.Millisecond
+	for {
+		pod, err := c.pods.Get(ctx, name)
+		if errors.Is(err, k8s.ErrNotFound) {
+			return 0, nil
+		}
+		if err != nil {
+			return 0, err
+		}
+		if exit, done := exitCodeFromPod(pod); done {
+			return exit, nil
+		}
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		case <-time.After(poll):
+		}
+	}
+}
+
+func exitCodeFromPod(pod *corev1.Pod) (int64, bool) {
+	switch pod.Status.Phase {
+	case corev1.PodSucceeded:
+		return 0, true
+	case corev1.PodFailed:
+		// Prefer the container's actual exit code if available.
+		for _, cs := range pod.Status.ContainerStatuses {
+			if cs.State.Terminated != nil {
+				return int64(cs.State.Terminated.ExitCode), true
+			}
+		}
+		return 1, true
+	}
+	return 0, false
 }
 
 // stop: POST /containers/{id}/stop?t=<seconds>
