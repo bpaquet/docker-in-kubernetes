@@ -89,16 +89,30 @@ func TestPodsDeleteMissing(t *testing.T) {
 }
 
 func TestPodsFindByID(t *testing.T) {
-	store, _ := newStore(t, *managedPod("redis-1"), *managedPod("nginx-1"))
+	pod := managedPod("redis-1")
+	pod.Annotations = map[string]string{
+		podspec.AnnotationDockerName: "MyRedis_1",
+	}
+	store, _ := newStore(t, *pod, *managedPod("nginx-1"))
 
 	id := podspec.ContainerID(testNS, "redis-1")
-	got, err := store.FindByID(t.Context(), id)
-	require.NoError(t, err)
-	assert.Equal(t, "redis-1", got.Name)
 
-	got, err = store.FindByID(t.Context(), podspec.ShortID(id))
-	require.NoError(t, err)
-	assert.Equal(t, "redis-1", got.Name)
+	cases := []struct {
+		name string
+		ref  string
+	}{
+		{"pod name", "redis-1"},
+		{"docker-name annotation (original casing)", "MyRedis_1"},
+		{"full 64-hex container ID", id},
+		{"12-char short ID", podspec.ShortID(id)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := store.FindByID(t.Context(), tc.ref)
+			require.NoError(t, err)
+			assert.Equal(t, "redis-1", got.Name)
+		})
+	}
 }
 
 func TestPodsFindByIDNoMatch(t *testing.T) {

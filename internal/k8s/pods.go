@@ -111,19 +111,35 @@ func (p *Pods) List(ctx context.Context) ([]corev1.Pod, error) {
 	return list.Items, nil
 }
 
-// FindByID returns the managed pod whose derived ContainerID matches the given
-// value (full 64-hex or short 12-hex). Returns ErrNotFound on no match.
-func (p *Pods) FindByID(ctx context.Context, id string) (*corev1.Pod, error) {
-	if id == "" {
+// FindByID resolves a docker CLI reference to a managed pod. References
+// accepted, in order:
+//
+//   - the pod name (RFC 1123, what users see in `docker ps` NAMES column),
+//   - the original `--name` value (stored in the docker-name annotation),
+//   - the full 64-hex container ID (sha256 of namespace/name),
+//   - the 12-char short ID.
+//
+// Returns ErrNotFound on no match.
+func (p *Pods) FindByID(ctx context.Context, ref string) (*corev1.Pod, error) {
+	if ref == "" {
 		return nil, ErrNotFound
+	}
+	// Fast path: direct lookup by pod name. Suppress errors and fall through
+	// to the label-selector scan so an invalid-as-k8s-name input (e.g. a
+	// 64-hex container ID) still resolves below.
+	if pod, err := p.Get(ctx, ref); err == nil {
+		return pod, nil
 	}
 	pods, err := p.List(ctx)
 	if err != nil {
 		return nil, err
 	}
 	for i := range pods {
+		if pods[i].Annotations[podspec.AnnotationDockerName] == ref {
+			return &pods[i], nil
+		}
 		fullID := podspec.ContainerID(pods[i].Namespace, pods[i].Name)
-		if fullID == id || podspec.ShortID(fullID) == id {
+		if fullID == ref || podspec.ShortID(fullID) == ref {
 			return &pods[i], nil
 		}
 	}

@@ -8,16 +8,14 @@ on:
 permissions:
   contents: read
 
+# All jobs install the toolchain from mise.toml so versions match local dev.
 jobs:
-  test:
+  lint:
+    name: lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.26'
-          cache: true
+      - uses: jdx/mise-action@v2
 
       - name: gofmt
         run: |
@@ -32,9 +30,31 @@ jobs:
         run: go vet ./...
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v7
-        with:
-          version: v2.12.2
+        run: golangci-lint run --build-tags=integration ./...
+
+  unit:
+    name: unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
 
       - name: go test
         run: go test -race -count=1 ./...
+
+  integration:
+    name: integration tests (kind)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+
+      - name: start kind cluster
+        run: mise run integration-up
+
+      - name: run integration tests
+        run: mise run integration-test
+
+      - name: stop kind cluster
+        if: always()
+        run: mise run integration-down
