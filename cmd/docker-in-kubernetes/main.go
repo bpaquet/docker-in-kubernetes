@@ -32,14 +32,10 @@ func main() {
 func run() error {
 	socketPath := flag.String("socket", "/tmp/docker-in-kubernetes.sock", "UNIX socket path to listen on")
 	logLevel := flag.String("log-level", "info", "log level: debug, info, warn, error")
-	namespace := flag.String("namespace", "", "Kubernetes namespace to manage pods in (required)")
+	namespace := flag.String("namespace", "docker-in-kubernetes", "Kubernetes namespace to manage pods in")
 	kubeconfig := flag.String("kubeconfig", "", "path to kubeconfig (defaults to KUBECONFIG env, then ~/.kube/config)")
 	kubeContext := flag.String("context", "", "kubeconfig context to use (defaults to current-context)")
 	flag.Parse()
-
-	if *namespace == "" {
-		return fmt.Errorf("--namespace is required")
-	}
 
 	logger, err := logutil.New(os.Stderr, *logLevel)
 	if err != nil {
