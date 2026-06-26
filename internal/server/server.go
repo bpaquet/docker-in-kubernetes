@@ -69,7 +69,7 @@ func New(cfg Config) http.Handler {
 	mux.HandleFunc("GET /_ping", handlePing)
 	mux.HandleFunc("HEAD /_ping", handlePing)
 	mux.HandleFunc("GET /version", handleVersion(cfg.DaemonVersion, cfg.GitCommit, cfg.BuildTime))
-	mux.HandleFunc("GET /info", handleInfo(cfg.DaemonVersion, cfg.Pods))
+	mux.HandleFunc("GET /info", handleInfo(cfg.DaemonVersion, cfg.Pods, logger))
 	mux.HandleFunc("GET /events", handleEvents)
 
 	if cfg.Pods != nil && cfg.Forwarder != nil && cfg.Forwards != nil {

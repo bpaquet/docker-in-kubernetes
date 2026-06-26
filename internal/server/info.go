@@ -1,6 +1,7 @@
 package server
 
 import (
+	"log/slog"
 	"net/http"
 	"runtime"
 
@@ -9,9 +10,9 @@ import (
 	"github.com/bpaquet/docker-in-kubernetes/internal/dockerapi"
 )
 
-func handleInfo(daemonVersion string, pods PodStore) http.HandlerFunc {
+func handleInfo(daemonVersion string, pods PodStore, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		total, running := containerCounts(r, pods)
+		total, running := containerCounts(r, pods, logger)
 		writeJSON(w, http.StatusOK, dockerapi.InfoResponse{
 			ID:                "DIK1:DOCKER:IN:KUBERNETES",
 			Name:              "docker-in-kubernetes",
@@ -27,12 +28,13 @@ func handleInfo(daemonVersion string, pods PodStore) http.HandlerFunc {
 	}
 }
 
-func containerCounts(r *http.Request, pods PodStore) (total, running int) {
+func containerCounts(r *http.Request, pods PodStore, logger *slog.Logger) (total, running int) {
 	if pods == nil {
 		return 0, 0
 	}
 	list, err := pods.List(r.Context())
 	if err != nil {
+		logger.Warn("info: list pods failed; reporting zero counts", "err", err)
 		return 0, 0
 	}
 	for i := range list {
