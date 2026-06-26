@@ -201,6 +201,15 @@ func (c *containerHandlers) create(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if err := allocateHostPorts(built.PortMappings); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := writePortsAnnotation(built.Pod, built.PortMappings); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
 	c.pending.put(&pendingContainer{
 		ID:         id,
 		DockerName: dockerName,
@@ -410,6 +419,11 @@ func (c *containerHandlers) list(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	labelFilters, err := parseLabelFilters(r.URL.Query().Get("filters"), c.logger)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid filters: "+err.Error())
+		return
+	}
 	all := boolQuery(r, "all")
 	out := make([]dockerapi.ContainerSummary, 0, len(pods))
 	for i := range pods {
@@ -417,15 +431,85 @@ func (c *containerHandlers) list(w http.ResponseWriter, r *http.Request) {
 		if !all && s.State != StateRunning {
 			continue
 		}
+		if !matchesLabelFilters(s.Labels, labelFilters) {
+			continue
+		}
 		out = append(out, s)
 	}
 	if all {
 		for _, p := range c.pending.list() {
-			out = append(out, summaryForPending(p))
+			s := summaryForPending(p)
+			if !matchesLabelFilters(s.Labels, labelFilters) {
+				continue
+			}
+			out = append(out, s)
 		}
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Created > out[j].Created })
 	writeJSON(w, http.StatusOK, out)
+}
+
+// parseLabelFilters extracts the `label` entries from Docker's filters
+// query. Docker emits two shapes: an array form {"label":["k=v"]} and a
+// legacy map-set form {"label":{"k=v":true}}. We only honor `label` —
+// callers that pass `status`/`name`/`ancestor`/etc. get a misleadingly
+// unfiltered response. Logging dropped keys gives an operator a chance
+// to notice.
+func parseLabelFilters(raw string, logger *slog.Logger) ([]labelFilter, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	var arr map[string][]string
+	if err := json.Unmarshal([]byte(raw), &arr); err == nil {
+		for k := range arr {
+			if k != "label" {
+				logger.Debug("containers.list: dropping unsupported filter key", "key", k)
+			}
+		}
+		return labelFiltersFromValues(arr["label"]), nil
+	}
+	var mapSet map[string]map[string]bool
+	if err := json.Unmarshal([]byte(raw), &mapSet); err == nil {
+		for k := range mapSet {
+			if k != "label" {
+				logger.Debug("containers.list: dropping unsupported filter key", "key", k)
+			}
+		}
+		values := make([]string, 0, len(mapSet["label"]))
+		for v := range mapSet["label"] {
+			values = append(values, v)
+		}
+		return labelFiltersFromValues(values), nil
+	}
+	return nil, errors.New("filters must be JSON object")
+}
+
+type labelFilter struct {
+	key      string
+	value    string
+	hasValue bool
+}
+
+func labelFiltersFromValues(values []string) []labelFilter {
+	out := make([]labelFilter, 0, len(values))
+	for _, v := range values {
+		k, val, ok := strings.Cut(v, "=")
+		out = append(out, labelFilter{key: k, value: val, hasValue: ok})
+	}
+	return out
+}
+
+func matchesLabelFilters(labels map[string]string, filters []labelFilter) bool {
+	for _, f := range filters {
+		got, ok := labels[f.key]
+		if !ok {
+			return false
+		}
+		if f.hasValue && got != f.value {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *containerHandlers) inspect(w http.ResponseWriter, r *http.Request) {
@@ -595,6 +679,51 @@ func podTerminated(pod *corev1.Pod) bool {
 		}
 	}
 	return false
+}
+
+// allocateHostPorts assigns a free 127.0.0.1 TCP port to every mapping that
+// asked for a random one. Docker accepts both "" and "0" as the
+// "allocate-anything" signal (testcontainers v0.43 sends "0").
+//
+// Listeners are held open until every mapping has a port, then released
+// together — sequential close-then-listen could legitimately yield the same
+// port twice for a multi-port container. The bind→close→forwarder-rebind
+// race across requests is still present and acknowledged in Design.md.
+func allocateHostPorts(mappings []podspec.PortMapping) error {
+	var holders []net.Listener
+	defer func() {
+		for _, l := range holders {
+			_ = l.Close()
+		}
+	}()
+	for i := range mappings {
+		if mappings[i].HostPort != "" && mappings[i].HostPort != "0" {
+			continue
+		}
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			return fmt.Errorf("allocate host port for %d/%s: %w",
+				mappings[i].ContainerPort, mappings[i].Protocol, err)
+		}
+		holders = append(holders, l)
+		mappings[i].HostPort = strconv.Itoa(l.Addr().(*net.TCPAddr).Port)
+	}
+	return nil
+}
+
+func writePortsAnnotation(pod *corev1.Pod, mappings []podspec.PortMapping) error {
+	if len(mappings) == 0 {
+		return nil
+	}
+	b, err := json.Marshal(mappings)
+	if err != nil {
+		return fmt.Errorf("marshal ports annotation: %w", err)
+	}
+	if pod.Annotations == nil {
+		pod.Annotations = make(map[string]string)
+	}
+	pod.Annotations[podspec.AnnotationPorts] = string(b)
+	return nil
 }
 
 // loadMappingsFromPod decodes the ports annotation written at create time.

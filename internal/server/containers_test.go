@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"sync"
 	"testing"
 	"time"
@@ -130,6 +131,119 @@ func TestCreateContainerRejectsEmptyImage(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// Testcontainers / Docker CLI request a random host port via either an
+// empty string or "0" in PortBindings. The daemon must allocate a free
+// port and surface it via NetworkSettings.Ports so Endpoint() can resolve
+// a real host:port.
+func TestCreateAllocatesRandomHostPort(t *testing.T) {
+	for _, signal := range []string{"", "0"} {
+		t.Run("HostPort="+signal, func(t *testing.T) {
+			ts, _, _, _ := newTestHandler(t)
+
+			body, _ := json.Marshal(dockerapi.CreateRequest{
+				Image:        "redis",
+				ExposedPorts: map[string]struct{}{"6379/tcp": {}},
+				HostConfig: dockerapi.HostConfig{
+					PortBindings: map[string][]dockerapi.PortBinding{
+						"6379/tcp": {{HostPort: signal}},
+					},
+				},
+			})
+			resp, err := http.Post(ts.URL+"/v1.43/containers/create", "application/json", bytes.NewReader(body))
+			require.NoError(t, err)
+			var created dockerapi.CreateResponse
+			require.NoError(t, json.NewDecoder(resp.Body).Decode(&created))
+			resp.Body.Close()
+
+			startResp, err := http.Post(ts.URL+"/v1.43/containers/"+created.ID+"/start", "", nil)
+			require.NoError(t, err)
+			startResp.Body.Close()
+
+			jsonResp, err := http.Get(ts.URL + "/v1.43/containers/" + created.ID + "/json")
+			require.NoError(t, err)
+			defer jsonResp.Body.Close()
+
+			var inspect dockerapi.ContainerInspect
+			require.NoError(t, json.NewDecoder(jsonResp.Body).Decode(&inspect))
+
+			bindings := inspect.NetworkSettings.Ports["6379/tcp"]
+			require.Len(t, bindings, 1)
+			assert.Equal(t, "127.0.0.1", bindings[0].HostIP)
+			assert.NotEmpty(t, bindings[0].HostPort, "expected allocated host port")
+			assert.NotEqual(t, "0", bindings[0].HostPort)
+
+			// Both fields downstream readers may touch should agree.
+			hostBindings := inspect.HostConfig.PortBindings["6379/tcp"]
+			require.Len(t, hostBindings, 1)
+			assert.Equal(t, bindings[0].HostPort, hostBindings[0].HostPort)
+		})
+	}
+}
+
+// Multi-port container should get a distinct allocated port for each spec.
+func TestCreateAllocatesPerPortBinding(t *testing.T) {
+	ts, _, _, _ := newTestHandler(t)
+	body, _ := json.Marshal(dockerapi.CreateRequest{
+		Image: "redis",
+		HostConfig: dockerapi.HostConfig{
+			PortBindings: map[string][]dockerapi.PortBinding{
+				"6379/tcp": {{HostPort: ""}},
+				"8080/tcp": {{HostPort: "0"}},
+			},
+		},
+	})
+	resp, err := http.Post(ts.URL+"/v1.43/containers/create", "application/json", bytes.NewReader(body))
+	require.NoError(t, err)
+	var created dockerapi.CreateResponse
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&created))
+	resp.Body.Close()
+	startResp, err := http.Post(ts.URL+"/v1.43/containers/"+created.ID+"/start", "", nil)
+	require.NoError(t, err)
+	startResp.Body.Close()
+
+	jsonResp, err := http.Get(ts.URL + "/v1.43/containers/" + created.ID + "/json")
+	require.NoError(t, err)
+	defer jsonResp.Body.Close()
+
+	var inspect dockerapi.ContainerInspect
+	require.NoError(t, json.NewDecoder(jsonResp.Body).Decode(&inspect))
+	p1 := inspect.NetworkSettings.Ports["6379/tcp"]
+	p2 := inspect.NetworkSettings.Ports["8080/tcp"]
+	require.Len(t, p1, 1)
+	require.Len(t, p2, 1)
+	assert.NotEmpty(t, p1[0].HostPort)
+	assert.NotEmpty(t, p2[0].HostPort)
+	assert.NotEqual(t, p1[0].HostPort, p2[0].HostPort, "each container port gets a distinct host port")
+}
+
+// Testcontainers probes /containers/json with a label filter to look up its
+// reaper container. We have none, and any other managed pod must not bleed
+// through — so honor the `filters` query param. Two encodings to cover:
+// the modern array form and the legacy map-set form that testcontainers
+// v0.43 still emits.
+func TestListContainersHonorsLabelFilter(t *testing.T) {
+	tests := map[string]string{
+		"array form":   `{"label":["org.testcontainers.reaper=true"]}`,
+		"map-set form": `{"label":{"org.testcontainers.reaper=true":true}}`,
+	}
+	for name, filters := range tests {
+		t.Run(name, func(t *testing.T) {
+			pod := managedPod("redis-1")
+			pod.Status = corev1.PodStatus{Phase: corev1.PodRunning}
+			ts, _, _, _ := newTestHandler(t, pod)
+
+			resp, err := http.Get(ts.URL + "/v1.43/containers/json?all=1&filters=" + url.QueryEscape(filters))
+			require.NoError(t, err)
+			defer resp.Body.Close()
+			require.Equal(t, http.StatusOK, resp.StatusCode)
+
+			var out []dockerapi.ContainerSummary
+			require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
+			assert.Empty(t, out, "no container carries the reaper label")
+		})
+	}
 }
 
 func TestStartOnUnknownReturns404(t *testing.T) {
