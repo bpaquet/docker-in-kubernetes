@@ -51,7 +51,7 @@ func run() error {
 	}
 	logger.Info("kubernetes connected", "mode", conn.Mode.String(), "namespace", *namespace)
 
-	pods := k8s.NewPods(conn.Clientset, *namespace)
+	pods := k8s.NewPods(conn.Clientset, *namespace).WithREST(conn.REST)
 
 	var fw server.PortForwarder
 	switch conn.Mode {

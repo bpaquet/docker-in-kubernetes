@@ -10,7 +10,11 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/remotecommand"
 
 	"github.com/bpaquet/docker-in-kubernetes/internal/podspec"
 )
@@ -32,6 +36,7 @@ var ErrNotFound = errors.New("pod not found")
 // Pods is the daemon's pod CRUD against one namespace.
 type Pods struct {
 	cs           kubernetes.Interface
+	rest         *rest.Config
 	namespace    string
 	pollInterval time.Duration
 	readyTimeout time.Duration
@@ -45,6 +50,13 @@ func NewPods(cs kubernetes.Interface, namespace string) *Pods {
 		pollInterval: defaultPollInterval,
 		readyTimeout: defaultReadyTimeout,
 	}
+}
+
+// WithREST sets the rest.Config used for attach/exec (which need SPDY,
+// not the clientset RESTClient alone).
+func (p *Pods) WithREST(cfg *rest.Config) *Pods {
+	p.rest = cfg
+	return p
 }
 
 // Namespace returns the bound namespace.
@@ -146,7 +158,9 @@ func (e *ImagePullFailedError) Error() string {
 	return e.Reason
 }
 
-// WaitForReady blocks until Ready, a fatal container state, or the timeout.
+// WaitForReady blocks until Ready or terminated, a fatal waiting state, or
+// the timeout. PodSucceeded counts as "done starting" so a fast-exiting
+// container doesn't trip the readiness probe loop.
 func (p *Pods) WaitForReady(ctx context.Context, name string) error {
 	deadline := time.Now().Add(p.readyTimeout)
 	for {
@@ -154,7 +168,7 @@ func (p *Pods) WaitForReady(ctx context.Context, name string) error {
 		if err != nil {
 			return err
 		}
-		if isReady(pod) {
+		if isReady(pod) || pod.Status.Phase == corev1.PodSucceeded {
 			return nil
 		}
 		if reason, message := fatalContainerWaitingState(pod); reason != "" {
@@ -208,6 +222,62 @@ func (p *Pods) StreamLogs(ctx context.Context, name string, opts LogOptions) (io
 		return nil, fmt.Errorf("stream logs %s: %w", name, err)
 	}
 	return rc, nil
+}
+
+// StreamOptions is what callers feed Attach/Exec.
+type StreamOptions struct {
+	Stdin             io.Reader
+	Stdout            io.Writer
+	Stderr            io.Writer
+	TTY               bool
+	TerminalSizeQueue remotecommand.TerminalSizeQueue
+}
+
+// Attach streams to/from the pod's main container via the attach subresource.
+func (p *Pods) Attach(ctx context.Context, podName string, opts StreamOptions) error {
+	po := &corev1.PodAttachOptions{
+		Stdin:  opts.Stdin != nil,
+		Stdout: opts.Stdout != nil,
+		Stderr: opts.Stderr != nil,
+		TTY:    opts.TTY,
+	}
+	return p.runSPDY(ctx, podName, "attach", po, opts)
+}
+
+// Exec runs cmd inside the pod's main container.
+func (p *Pods) Exec(ctx context.Context, podName string, cmd []string, opts StreamOptions) error {
+	po := &corev1.PodExecOptions{
+		Command: cmd,
+		Stdin:   opts.Stdin != nil,
+		Stdout:  opts.Stdout != nil,
+		Stderr:  opts.Stderr != nil,
+		TTY:     opts.TTY,
+	}
+	return p.runSPDY(ctx, podName, "exec", po, opts)
+}
+
+func (p *Pods) runSPDY(ctx context.Context, podName, subresource string, params runtime.Object, opts StreamOptions) error {
+	if p.rest == nil {
+		return errors.New("pods: rest.Config not set; call WithREST")
+	}
+	req := p.cs.CoreV1().RESTClient().Post().
+		Resource("pods").
+		Name(podName).
+		Namespace(p.namespace).
+		SubResource(subresource).
+		VersionedParams(params, scheme.ParameterCodec)
+
+	executor, err := remotecommand.NewSPDYExecutor(p.rest, "POST", req.URL())
+	if err != nil {
+		return fmt.Errorf("spdy executor: %w", err)
+	}
+	return executor.StreamWithContext(ctx, remotecommand.StreamOptions{
+		Stdin:             opts.Stdin,
+		Stdout:            opts.Stdout,
+		Stderr:            opts.Stderr,
+		Tty:               opts.TTY,
+		TerminalSizeQueue: opts.TerminalSizeQueue,
+	})
 }
 
 // PodIP returns the assigned PodIP, or "" if not yet assigned.

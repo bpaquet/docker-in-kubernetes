@@ -128,6 +128,49 @@ type WaitError struct {
 	Message string `json:"Message"`
 }
 
+// ExecCreateRequest is the body of POST /containers/{id}/exec.
+type ExecCreateRequest struct {
+	AttachStdin  bool     `json:"AttachStdin,omitempty"`
+	AttachStdout bool     `json:"AttachStdout,omitempty"`
+	AttachStderr bool     `json:"AttachStderr,omitempty"`
+	Tty          bool     `json:"Tty,omitempty"`
+	Cmd          []string `json:"Cmd"`
+	Env          []string `json:"Env,omitempty"`
+	WorkingDir   string   `json:"WorkingDir,omitempty"`
+	User         string   `json:"User,omitempty"`
+}
+
+// ExecCreateResponse is returned by POST /containers/{id}/exec.
+type ExecCreateResponse struct {
+	ID string `json:"Id"`
+}
+
+// ExecStartRequest is the body of POST /exec/{id}/start.
+type ExecStartRequest struct {
+	Detach bool `json:"Detach,omitempty"`
+	Tty    bool `json:"Tty,omitempty"`
+}
+
+// ExecInspect is returned by GET /exec/{id}/json.
+type ExecInspect struct {
+	ID            string        `json:"ID"`
+	Running       bool          `json:"Running"`
+	ExitCode      int           `json:"ExitCode"`
+	ProcessConfig ProcessConfig `json:"ProcessConfig"`
+	OpenStdin     bool          `json:"OpenStdin"`
+	OpenStdout    bool          `json:"OpenStdout"`
+	OpenStderr    bool          `json:"OpenStderr"`
+	ContainerID   string        `json:"ContainerID"`
+	Pid           int           `json:"Pid"`
+}
+
+// ProcessConfig is the slim Process subobject of ExecInspect.
+type ProcessConfig struct {
+	Tty        bool     `json:"tty"`
+	EntryPoint string   `json:"entrypoint"`
+	Arguments  []string `json:"arguments"`
+}
+
 // InfoResponse is the minimal /info subset the docker CLI accepts.
 type InfoResponse struct {
 	ID                string `json:"ID"`

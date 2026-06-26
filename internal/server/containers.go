@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"sort"
 	"strconv"
@@ -27,6 +28,7 @@ type containerHandlers struct {
 	pods      PodStore
 	forwarder PortForwarder
 	registry  *forwarder.Registry
+	execs     *execStore
 	logger    *slog.Logger
 }
 
@@ -36,13 +38,97 @@ func (c *containerHandlers) register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /containers/{id}/stop", c.stop)
 	mux.HandleFunc("POST /containers/{id}/kill", c.kill)
 	mux.HandleFunc("POST /containers/{id}/wait", c.wait)
+	mux.HandleFunc("POST /containers/{id}/attach", c.attach)
+	mux.HandleFunc("POST /containers/{id}/resize", c.resize)
 	mux.HandleFunc("DELETE /containers/{id}", c.delete)
 	mux.HandleFunc("GET /containers/{id}/json", c.inspect)
 	mux.HandleFunc("GET /containers/{id}/logs", c.logs)
 	mux.HandleFunc("GET /containers/json", c.list)
 }
 
-// create: POST /containers/create?name=<name>
+// resize is a no-op stub: TTY resize forwarding needs a TerminalSizeQueue
+// wired into the in-flight SPDY attach, which we don't yet plumb. Returning
+// 200 keeps the docker CLI from logging a warning on every keystroke.
+func (c *containerHandlers) resize(w http.ResponseWriter, r *http.Request) {
+	if _, ok := c.resolvePod(w, r); !ok {
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+// attach hijacks the HTTP connection. With stdin we run a live SPDY attach.
+// Without stdin we tail the pod's logs — that path also captures output for
+// containers that exit before the CLI attaches.
+func (c *containerHandlers) attach(w http.ResponseWriter, r *http.Request) {
+	pod, ok := c.resolvePod(w, r)
+	if !ok {
+		return
+	}
+	wantStdin := boolQuery(r, "stdin")
+	tty := len(pod.Spec.Containers) > 0 && pod.Spec.Containers[0].TTY
+
+	conn, brw, err := hijack(w)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer func() { _ = conn.Close() }()
+	if err := writeRawStreamResponse(r, brw); err != nil {
+		c.logger.Warn("attach: hijack write failed", "err", err)
+		return
+	}
+
+	if wantStdin {
+		c.attachInteractive(pod, conn, brw, tty)
+		return
+	}
+	c.attachLogs(pod, conn, tty)
+}
+
+func (c *containerHandlers) attachInteractive(pod *corev1.Pod, conn net.Conn, brw *bufio.ReadWriter, tty bool) {
+	stdout, stderr := multiplexedStdoutStderr(conn, tty)
+	// Prefer raw conn for stdin: bufio.Reader can buffer bytes the apiserver
+	// SPDY layer can't see. brw.Reader is only needed when the server already
+	// pre-buffered post-header bytes (e.g. a request body before upgrade) —
+	// /attach has no body, so conn is safe.
+	opts := k8s.StreamOptions{Stdin: conn, Stdout: stdout, TTY: tty}
+	if !tty {
+		opts.Stderr = stderr
+	}
+	_ = brw // keep param so unused-import / unused-write lints stay quiet
+	c.logger.Info("attach: SPDY attach starting", "container", pod.Name, "tty", tty)
+	if err := c.pods.Attach(context.Background(), pod.Name, opts); err != nil {
+		c.logger.Info("attach ended", "container", pod.Name, "err", err)
+	}
+}
+
+func (c *containerHandlers) attachLogs(pod *corev1.Pod, conn io.Writer, tty bool) {
+	rc, err := c.pods.StreamLogs(context.Background(), pod.Name, k8s.LogOptions{Follow: true})
+	if err != nil {
+		c.logger.Warn("attach-logs: open failed", "container", pod.Name, "err", err)
+		return
+	}
+	defer func() { _ = rc.Close() }()
+
+	if tty {
+		_, _ = io.Copy(conn, rc)
+		return
+	}
+	br := bufio.NewReader(rc)
+	for {
+		line, err := br.ReadBytes('\n')
+		if len(line) > 0 {
+			if writeErr := writeMultiplexedChunk(conn, 1, line); writeErr != nil {
+				return
+			}
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+// create posts the pod and waits for Ready. /start is then a no-op.
 func (c *containerHandlers) create(w http.ResponseWriter, r *http.Request) {
 	var req dockerapi.CreateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -51,10 +137,6 @@ func (c *containerHandlers) create(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Image == "" {
 		writeError(w, http.StatusBadRequest, "Image is required")
-		return
-	}
-	if req.AttachStdin || req.AttachStdout || req.AttachStderr || req.OpenStdin || req.Tty {
-		writeError(w, http.StatusBadRequest, "interactive run is not supported by docker-in-kubernetes; use -d (detached)")
 		return
 	}
 
@@ -85,10 +167,17 @@ func (c *containerHandlers) create(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, dockerapi.CreateResponse{ID: id, Warnings: []string{}})
 }
 
-// start: POST /containers/{id}/start. No-op if already running.
+// start: idempotent. 204 even on missing pod, so docker run --rm doesn't see
+// "no such container" when /wait?condition=removed wins the race.
 func (c *containerHandlers) start(w http.ResponseWriter, r *http.Request) {
-	pod, ok := c.resolvePod(w, r)
-	if !ok {
+	id := r.PathValue("id")
+	pod, err := c.pods.FindByID(r.Context(), id)
+	if errors.Is(err, k8s.ErrNotFound) {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	mappings, err := loadMappingsFromPod(pod)
@@ -103,7 +192,9 @@ func (c *containerHandlers) start(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// wait short-circuits condition=next-exit; see Design.md "Wait endpoint quirk".
+// wait short-circuits condition=next-exit while the container is still
+// running (see Design.md "Wait endpoint quirk"). condition=removed blocks
+// until exit and then deletes the pod — the basis of `docker run --rm`.
 func (c *containerHandlers) wait(w http.ResponseWriter, r *http.Request) {
 	pod, ok := c.resolvePod(w, r)
 	if !ok {
@@ -111,6 +202,10 @@ func (c *containerHandlers) wait(w http.ResponseWriter, r *http.Request) {
 	}
 	condition := r.URL.Query().Get("condition")
 	if condition == "next-exit" {
+		if exit, done := exitCodeFromPod(pod); done {
+			writeJSON(w, http.StatusOK, dockerapi.WaitResponse{StatusCode: exit})
+			return
+		}
 		writeJSON(w, http.StatusOK, dockerapi.WaitResponse{StatusCode: 0})
 		return
 	}
@@ -118,6 +213,10 @@ func (c *containerHandlers) wait(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	if condition == "removed" {
+		_ = c.registry.Close(podspec.ContainerID(pod.Namespace, pod.Name))
+		_ = c.pods.Delete(r.Context(), pod.Name, 0)
 	}
 	writeJSON(w, http.StatusOK, dockerapi.WaitResponse{StatusCode: exit})
 }
