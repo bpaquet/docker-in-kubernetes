@@ -460,7 +460,10 @@ func (c *containerHandlers) logs(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/vnd.docker.raw-stream")
 	w.WriteHeader(http.StatusOK)
 
-	flusher, _ := w.(http.Flusher)
+	// logRequests wraps w in a statusRecorder that doesn't implement Flusher;
+	// w.(http.Flusher) silently fails, so `docker logs -f` would buffer per
+	// chunk instead of streaming line-by-line.
+	respCtl := http.NewResponseController(w)
 	bw := bufio.NewReader(rc)
 	for {
 		line, err := bw.ReadBytes('\n')
@@ -468,9 +471,7 @@ func (c *containerHandlers) logs(w http.ResponseWriter, r *http.Request) {
 			if err := writeMultiplexedChunk(w, 1, line); err != nil {
 				return
 			}
-			if flusher != nil {
-				flusher.Flush()
-			}
+			_ = respCtl.Flush()
 		}
 		if err != nil {
 			return

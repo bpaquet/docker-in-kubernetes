@@ -37,16 +37,17 @@ func handleEvents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// Try RFC3339 first so a bare year ("2026") isn't parsed as unix seconds.
 func parseEventTime(s string) (time.Time, bool) {
 	if s == "" {
 		return time.Time{}, false
 	}
+	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+		return t, true
+	}
 	if f, err := strconv.ParseFloat(s, 64); err == nil {
 		sec, frac := int64(f), f-float64(int64(f))
 		return time.Unix(sec, int64(frac*1e9)), true
-	}
-	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
-		return t, true
 	}
 	return time.Time{}, false
 }

@@ -51,26 +51,32 @@ func TestEventsHoldsOpenInProcess(t *testing.T) {
 	assert.Empty(t, body, "events stream should emit nothing")
 }
 
-// `?until=<unix-ts-in-the-past>` closes the stream immediately.
+// `?until=<past>` closes the stream immediately. Covers both timestamp formats.
 func TestEventsUntilInPastReturnsImmediately(t *testing.T) {
-	ts := newTestServer(t)
+	tests := map[string]string{
+		"unix seconds": strconv.FormatInt(time.Now().Add(-time.Hour).Unix(), 10),
+		"RFC3339":      time.Now().Add(-time.Hour).UTC().Format(time.RFC3339),
+	}
+	for name, until := range tests {
+		t.Run(name, func(t *testing.T) {
+			ts := newTestServer(t)
 
-	past := time.Now().Add(-time.Hour).Unix()
-	resp, err := http.Get(ts.URL + "/v1.43/events?until=" + strconv.FormatInt(past, 10)) //nolint:bodyclose // closed by goroutine via io.ReadAll + defer
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
+			resp, err := http.Get(ts.URL + "/v1.43/events?until=" + until) //nolint:bodyclose // closed via defer below
+			require.NoError(t, err)
+			defer func() { _ = resp.Body.Close() }()
+			assert.Equal(t, http.StatusOK, resp.StatusCode)
 
-	// Body should EOF on its own (no cancel needed).
-	done := make(chan struct{})
-	go func() {
-		_, _ = io.ReadAll(resp.Body)
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("body did not close though until was in the past")
+			done := make(chan struct{})
+			go func() {
+				_, _ = io.ReadAll(resp.Body)
+				close(done)
+			}()
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				t.Fatal("body did not close though until was in the past")
+			}
+		})
 	}
 }
 
