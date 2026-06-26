@@ -28,6 +28,22 @@ func startAlpineSleep(t *testing.T, env *testEnv) (containerID, podName string) 
 	return containerID, podName
 }
 
+func TestDockerStopGracefully(t *testing.T) {
+	env := newEnv(t)
+	id, name := startAlpineSleep(t, env)
+
+	start := time.Now()
+	out, err := env.docker(t, 30*time.Second, "stop", "-t", "1", id)
+	require.NoError(t, err, "docker stop output:\n%s", out)
+	elapsed := time.Since(start)
+	assert.Less(t, elapsed, 15*time.Second, "stop -t 1 should return well under 15s")
+
+	require.Eventually(t, func() bool {
+		_, err := env.Pods.Get(context.Background(), name)
+		return errors.Is(err, k8s.ErrNotFound)
+	}, 30*time.Second, 200*time.Millisecond, "pod should be gone after docker stop")
+}
+
 func TestDockerKillTerminatesContainer(t *testing.T) {
 	env := newEnv(t)
 	id, name := startAlpineSleep(t, env)

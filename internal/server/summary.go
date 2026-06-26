@@ -36,14 +36,6 @@ func buildSummary(pod *corev1.Pod) dockerapi.ContainerSummary {
 		created = pod.CreationTimestamp.Time
 	}
 
-	labels := pod.Labels
-	if raw := pod.Annotations[podspec.AnnotationLabels]; raw != "" {
-		var userLabels map[string]string
-		if err := json.Unmarshal([]byte(raw), &userLabels); err == nil {
-			labels = userLabels
-		}
-	}
-
 	return dockerapi.ContainerSummary{
 		ID:         id,
 		Names:      []string{"/" + name},
@@ -52,11 +44,23 @@ func buildSummary(pod *corev1.Pod) dockerapi.ContainerSummary {
 		Command:    summaryCommand(pod),
 		Created:    created.Unix(),
 		Ports:      summaryPorts(pod),
-		Labels:     labels,
+		Labels:     userLabelsFromPod(pod),
 		State:      state,
 		Status:     status(state, created),
 		HostConfig: dockerapi.SummaryHostConfig{NetworkMode: "default"},
 	}
+}
+
+// userLabelsFromPod returns the labels the user passed via --label, falling
+// back to the pod's k8s labels when no user labels were recorded.
+func userLabelsFromPod(pod *corev1.Pod) map[string]string {
+	if raw := pod.Annotations[podspec.AnnotationLabels]; raw != "" {
+		var user map[string]string
+		if err := json.Unmarshal([]byte(raw), &user); err == nil {
+			return user
+		}
+	}
+	return pod.Labels
 }
 
 func buildInspect(pod *corev1.Pod) dockerapi.ContainerInspect {
@@ -103,7 +107,7 @@ func buildInspect(pod *corev1.Pod) dockerapi.ContainerInspect {
 			Image:    image,
 			Hostname: pod.Spec.Hostname,
 			Env:      env,
-			Labels:   pod.Labels,
+			Labels:   userLabelsFromPod(pod),
 		},
 		HostConfig: dockerapi.HostConfig{
 			NetworkMode:  "default",

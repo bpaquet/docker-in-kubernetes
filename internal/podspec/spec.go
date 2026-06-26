@@ -67,13 +67,7 @@ func Build(in BuildInput) (*BuildResult, error) {
 		return nil, err
 	}
 
-	containerPorts := make([]corev1.ContainerPort, 0, len(ports))
-	for _, p := range ports {
-		containerPorts = append(containerPorts, corev1.ContainerPort{
-			ContainerPort: int32(p.ContainerPort),
-			Protocol:      protocolFromString(p.Protocol),
-		})
-	}
+	containerPorts := dedupContainerPorts(ports)
 
 	envVars := make([]corev1.EnvVar, 0, len(in.Request.Env))
 	for _, e := range in.Request.Env {
@@ -122,27 +116,25 @@ func parsePortBindings(
 	bindings map[string][]dockerapi.PortBinding,
 	exposed map[string]struct{},
 ) ([]PortMapping, error) {
-	// PortBindings is authoritative; ExposedPorts only contributes ports that
-	// aren't already bound.
 	type key struct {
 		port  uint16
 		proto string
 	}
-	seen := make(map[key]PortMapping)
+	bound := make(map[key]bool)
+	out := []PortMapping{}
 
 	for spec, binds := range bindings {
 		port, proto, err := parsePortSpec(spec)
 		if err != nil {
 			return nil, fmt.Errorf("port %q: %w", spec, err)
 		}
-		hostPort := ""
-		if len(binds) > 0 {
-			hostPort = binds[0].HostPort
+		bound[key{port, proto}] = true
+		if len(binds) == 0 {
+			out = append(out, PortMapping{ContainerPort: port, Protocol: proto})
+			continue
 		}
-		seen[key{port, proto}] = PortMapping{
-			HostPort:      hostPort,
-			ContainerPort: port,
-			Protocol:      proto,
+		for _, b := range binds {
+			out = append(out, PortMapping{HostPort: b.HostPort, ContainerPort: port, Protocol: proto})
 		}
 	}
 	for spec := range exposed {
@@ -150,24 +142,19 @@ func parsePortBindings(
 		if err != nil {
 			return nil, fmt.Errorf("exposed port %q: %w", spec, err)
 		}
-		if _, ok := seen[key{port, proto}]; ok {
-			continue
-		}
-		seen[key{port, proto}] = PortMapping{
-			ContainerPort: port,
-			Protocol:      proto,
+		if !bound[key{port, proto}] {
+			out = append(out, PortMapping{ContainerPort: port, Protocol: proto})
 		}
 	}
 
-	out := make([]PortMapping, 0, len(seen))
-	for _, m := range seen {
-		out = append(out, m)
-	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].ContainerPort != out[j].ContainerPort {
 			return out[i].ContainerPort < out[j].ContainerPort
 		}
-		return out[i].Protocol < out[j].Protocol
+		if out[i].Protocol != out[j].Protocol {
+			return out[i].Protocol < out[j].Protocol
+		}
+		return out[i].HostPort < out[j].HostPort
 	})
 	return out, nil
 }
@@ -188,6 +175,29 @@ func parsePortSpec(s string) (uint16, string, error) {
 		return 0, "", fmt.Errorf("port 0 is not allowed")
 	}
 	return uint16(n), proto, nil
+}
+
+// dedupContainerPorts collapses multiple host-side mappings into one
+// corev1.ContainerPort per (port, proto), as required by the pod spec.
+func dedupContainerPorts(ports []PortMapping) []corev1.ContainerPort {
+	type key struct {
+		port  uint16
+		proto string
+	}
+	seen := make(map[key]bool, len(ports))
+	out := make([]corev1.ContainerPort, 0, len(ports))
+	for _, p := range ports {
+		k := key{p.ContainerPort, p.Protocol}
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		out = append(out, corev1.ContainerPort{
+			ContainerPort: int32(p.ContainerPort),
+			Protocol:      protocolFromString(p.Protocol),
+		})
+	}
+	return out
 }
 
 func protocolFromString(s string) corev1.Protocol {
