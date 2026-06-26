@@ -302,7 +302,10 @@ func TestPendingContainerRoutesThroughSharedBuilder(t *testing.T) {
 		Image:  "redis:7",
 		Env:    []string{"FOO=bar"},
 		Labels: map[string]string{"team": "platform"},
+		User:   "1000:1000",
 		HostConfig: dockerapi.HostConfig{
+			Memory:   256 * 1024 * 1024,
+			NanoCPUs: 500_000_000,
 			PortBindings: map[string][]dockerapi.PortBinding{
 				"6379/tcp": {{HostPort: "6380"}},
 			},
@@ -341,6 +344,9 @@ func TestPendingContainerRoutesThroughSharedBuilder(t *testing.T) {
 	assert.False(t, insp.State.Running)
 	assert.Equal(t, []string{"FOO=bar"}, insp.Config.Env)
 	assert.Equal(t, map[string]string{"team": "platform"}, insp.Config.Labels)
+	assert.Equal(t, "1000:1000", insp.Config.User)
+	assert.Equal(t, int64(256*1024*1024), insp.HostConfig.Memory)
+	assert.Equal(t, int64(500_000_000), insp.HostConfig.NanoCPUs)
 	require.NotNil(t, insp.HostConfig.PortBindings["6379/tcp"])
 	assert.Equal(t, "6380", insp.HostConfig.PortBindings["6379/tcp"][0].HostPort)
 }
