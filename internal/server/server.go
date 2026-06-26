@@ -51,6 +51,8 @@ type Config struct {
 	Forwarder     PortForwarder
 	Forwards      *forwarder.Registry
 	Images        *images.Store
+	// CleanupPollInterval overrides the watcher's pod-poll interval. Defaults to 2s.
+	CleanupPollInterval time.Duration
 }
 
 // New returns the HTTP handler.
@@ -67,12 +69,18 @@ func New(cfg Config) http.Handler {
 	mux.HandleFunc("GET /info", handleInfo(cfg.DaemonVersion))
 
 	if cfg.Pods != nil && cfg.Forwarder != nil && cfg.Forwards != nil {
+		cleanupPoll := cfg.CleanupPollInterval
+		if cleanupPoll == 0 {
+			cleanupPoll = 2 * time.Second
+		}
 		ch := &containerHandlers{
-			pods:      cfg.Pods,
-			forwarder: cfg.Forwarder,
-			registry:  cfg.Forwards,
-			execs:     newExecStore(),
-			logger:    logger,
+			pods:        cfg.Pods,
+			forwarder:   cfg.Forwarder,
+			registry:    cfg.Forwards,
+			execs:       newExecStore(),
+			pending:     newPendingStore(),
+			logger:      logger,
+			cleanupPoll: cleanupPoll,
 		}
 		ch.register(mux)
 		ch.registerExec(mux)

@@ -26,12 +26,21 @@ import (
 )
 
 type containerHandlers struct {
-	pods      PodStore
-	forwarder PortForwarder
-	registry  *forwarder.Registry
-	execs     *execStore
-	logger    *slog.Logger
+	pods        PodStore
+	forwarder   PortForwarder
+	registry    *forwarder.Registry
+	execs       *execStore
+	pending     *pendingStore
+	logger      *slog.Logger
+	cleanupPoll time.Duration
 }
+
+const (
+	attachStartTimeout = 60 * time.Second
+	waitStartTimeout   = 60 * time.Second
+	exitPollInterval   = 500 * time.Millisecond
+	startPollInterval  = 200 * time.Millisecond
+)
 
 func (c *containerHandlers) register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /containers/create", c.create)
@@ -57,16 +66,22 @@ func (c *containerHandlers) resize(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// attach hijacks the HTTP connection. With stdin we run a live SPDY attach.
-// Without stdin we tail the pod's logs — that path also captures output for
-// containers that exit before the CLI attaches.
+// attach hijacks the HTTP connection. For a pending container we hijack +
+// write upgrade headers first (so the CLI's subscription is "established"),
+// then block until /start realizes the pod, then SPDY-attach to it.
 func (c *containerHandlers) attach(w http.ResponseWriter, r *http.Request) {
-	pod, ok := c.resolvePod(w, r)
-	if !ok {
-		return
-	}
+	id := r.PathValue("id")
 	wantStdin := boolQuery(r, "stdin")
-	tty := len(pod.Spec.Containers) > 0 && pod.Spec.Containers[0].TTY
+
+	pending := c.pending.getByRef(id)
+	var pod *corev1.Pod
+	if pending == nil {
+		var ok bool
+		pod, ok = c.resolvePod(w, r)
+		if !ok {
+			return
+		}
+	}
 
 	conn, brw, err := http.NewResponseController(w).Hijack()
 	if err != nil {
@@ -79,7 +94,28 @@ func (c *containerHandlers) attach(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if wantStdin {
+	if pending != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), attachStartTimeout)
+		defer cancel()
+		if err := pending.waitForStart(ctx); err != nil {
+			c.logger.Info("attach: pending wait failed", "container", pending.Spec.Name, "err", err)
+			return
+		}
+		pod = pending.Spec
+	}
+
+	startedCtx, cancel := context.WithTimeout(context.Background(), attachStartTimeout)
+	defer cancel()
+	state, err := c.waitForContainerStarted(startedCtx, pod.Name)
+	if err != nil {
+		c.logger.Warn("attach: container never started", "container", pod.Name, "err", err)
+		return
+	}
+
+	tty := len(pod.Spec.Containers) > 0 && pod.Spec.Containers[0].TTY
+	// SPDY attach to a terminated container fails opaquely; fall back to the
+	// log stream so the CLI sees the container's final output.
+	if wantStdin && !state.terminated {
 		c.attachInteractive(pod, conn, tty)
 		return
 	}
@@ -125,7 +161,9 @@ func (c *containerHandlers) attachLogs(pod *corev1.Pod, conn io.Writer, tty bool
 	}
 }
 
-// create posts the pod and waits for Ready. /start is then a no-op.
+// create stages the pod spec in memory; the pod isn't realized in k8s until
+// /start. Mirrors Docker's "created" state and lets the CLI's create→attach
+// →start flow set up attach before the container actually runs.
 func (c *containerHandlers) create(w http.ResponseWriter, r *http.Request) {
 	var req dockerapi.CreateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -149,28 +187,60 @@ func (c *containerHandlers) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := c.pods.Create(r.Context(), built.Pod); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	if err := c.ensureRunning(r.Context(), built.PodName, built.PortMappings); err != nil {
-		c.logger.Warn("ensureRunning failed", "name", built.PodName, "err", err)
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
 	id := podspec.ContainerID(c.pods.Namespace(), built.PodName)
+
+	if dockerName != "" {
+		// Match docker semantics: duplicate --name → 409.
+		if c.pending.getByRef(dockerName) != nil {
+			writeError(w, http.StatusConflict, "Conflict. The container name \""+dockerName+"\" is already in use")
+			return
+		}
+		if _, err := c.pods.Get(r.Context(), built.PodName); err == nil {
+			writeError(w, http.StatusConflict, "Conflict. The container name \""+dockerName+"\" is already in use")
+			return
+		}
+	}
+
+	c.pending.put(&pendingContainer{
+		ID:         id,
+		DockerName: dockerName,
+		Spec:       built.Pod,
+		Mappings:   built.PortMappings,
+		CreatedAt:  time.Now().UTC(),
+		startCh:    make(chan struct{}),
+	})
 	writeJSON(w, http.StatusCreated, dockerapi.CreateResponse{ID: id, Warnings: []string{}})
 }
 
-// start: idempotent. 204 even on missing pod, so docker run --rm doesn't see
-// "no such container" when /wait?condition=removed wins the race.
+// start realizes a /create'd pod (the common path) or no-ops if the pod is
+// already in k8s.
 func (c *containerHandlers) start(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+
+	if p := c.pending.getByRef(id); p != nil {
+		if _, err := c.pods.Create(r.Context(), p.Spec); err != nil {
+			p.markFailed(err)
+			c.pending.remove(p.ID)
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		// Signal waiters (attach/wait subscribers) as soon as the pod is in
+		// k8s — they handle their own kubelet-state polling. Marking after
+		// ensureRunning would deadlock TTY+stdin pods whose Ready condition
+		// kubelet only flips on first attach.
+		p.markStarted()
+		c.pending.remove(p.ID)
+		if err := c.ensureRunning(r.Context(), p.Spec.Name, p.Mappings); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
 	pod, err := c.pods.FindByID(r.Context(), id)
 	if errors.Is(err, k8s.ErrNotFound) {
-		w.WriteHeader(http.StatusNoContent)
+		writeError(w, http.StatusNotFound, "no such container: "+id)
 		return
 	}
 	if err != nil {
@@ -189,23 +259,24 @@ func (c *containerHandlers) start(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// wait: condition=next-exit returns quickly. condition=removed (and the
-// default not-running) flushes headers immediately so the CLI's wait
-// subscription is "established" — the CLI blocks on those headers and can
-// only proceed with /start once they land. Body is written after the
-// container actually exits.
+// wait blocks until the container exits, then returns the exit code. Headers
+// are flushed up front so the CLI's wait subscription is "established" and
+// the rest of `docker run` can proceed. condition=removed also deletes the
+// pod after exit — basis of `docker run --rm`.
 func (c *containerHandlers) wait(w http.ResponseWriter, r *http.Request) {
-	pod, ok := c.resolvePod(w, r)
-	if !ok {
-		return
-	}
-	condition := r.URL.Query().Get("condition")
-	if condition == "next-exit" {
-		// Short poll for terminated state: fast-exiting containers may not
-		// have ContainerStatus updated yet on the first read.
-		exit, _ := c.pollExitCode(r.Context(), pod.Name, 500*time.Millisecond)
-		writeJSON(w, http.StatusOK, dockerapi.WaitResponse{StatusCode: exit})
-		return
+	id := r.PathValue("id")
+	pending := c.pending.getByRef(id)
+
+	// Reject unknown refs BEFORE flushing — once we've sent 200 we can't 404.
+	if pending == nil {
+		if _, err := c.pods.FindByID(r.Context(), id); err != nil {
+			if errors.Is(err, k8s.ErrNotFound) {
+				writeError(w, http.StatusNotFound, "no such container: "+id)
+				return
+			}
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 	}
 
 	setDockerHeaders(w)
@@ -213,44 +284,30 @@ func (c *containerHandlers) wait(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_ = http.NewResponseController(w).Flush()
 
-	exit, err := c.waitForExit(r.Context(), pod.Name)
+	if pending != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), waitStartTimeout)
+		defer cancel()
+		if err := pending.waitForStart(ctx); err != nil {
+			return
+		}
+	}
+
+	pod, err := c.pods.FindByID(r.Context(), id)
 	if err != nil {
-		// Headers already sent; closing the body is the best signal we have.
 		return
 	}
-	if condition == "removed" {
+	exit, err := c.waitForExit(r.Context(), pod.Name)
+	if err != nil {
+		return
+	}
+	if r.URL.Query().Get("condition") == "removed" {
 		_ = c.registry.Close(podspec.ContainerID(pod.Namespace, pod.Name))
 		_ = c.pods.Delete(r.Context(), pod.Name, 0)
 	}
 	_ = json.NewEncoder(w).Encode(dockerapi.WaitResponse{StatusCode: exit})
 }
 
-// pollExitCode polls the pod for a terminated container state up to the given
-// budget. Returns (0, false) if the container is still running at the
-// deadline, so the caller can short-circuit /wait.
-func (c *containerHandlers) pollExitCode(ctx context.Context, name string, budget time.Duration) (int64, bool) {
-	deadline := time.Now().Add(budget)
-	for {
-		pod, err := c.pods.Get(ctx, name)
-		if err != nil {
-			return 0, false
-		}
-		if exit, done := exitCodeFromPod(pod); done {
-			return exit, true
-		}
-		if time.Now().After(deadline) {
-			return 0, false
-		}
-		select {
-		case <-ctx.Done():
-			return 0, false
-		case <-time.After(200 * time.Millisecond):
-		}
-	}
-}
-
 func (c *containerHandlers) waitForExit(ctx context.Context, name string) (int64, error) {
-	const poll = 500 * time.Millisecond
 	for {
 		pod, err := c.pods.Get(ctx, name)
 		if errors.Is(err, k8s.ErrNotFound) {
@@ -265,7 +322,7 @@ func (c *containerHandlers) waitForExit(ctx context.Context, name string) (int64
 		select {
 		case <-ctx.Done():
 			return 0, ctx.Err()
-		case <-time.After(poll):
+		case <-time.After(exitPollInterval):
 		}
 	}
 }
@@ -296,9 +353,16 @@ func (c *containerHandlers) kill(w http.ResponseWriter, r *http.Request) {
 	c.terminate(w, r, 0)
 }
 
-// delete is a no-op if the pod is already gone (lets `stop && rm` succeed).
+// delete drops a pending container from the store, or deletes the live pod.
+// No-op if neither exists (lets `stop && rm` succeed).
 func (c *containerHandlers) delete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	if p := c.pending.getByRef(id); p != nil {
+		p.markFailed(errPendingRemoved)
+		c.pending.remove(p.ID)
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	pod, err := c.pods.FindByID(r.Context(), id)
 	if errors.Is(err, k8s.ErrNotFound) {
 		w.WriteHeader(http.StatusNoContent)
@@ -311,8 +375,16 @@ func (c *containerHandlers) delete(w http.ResponseWriter, r *http.Request) {
 	c.deletePod(w, r, pod, 0)
 }
 
-// terminate (kill/stop) 404s on a missing pod, unlike delete.
+// terminate (kill/stop) drops a pending entry or deletes the live pod.
+// 404s only if neither exists.
 func (c *containerHandlers) terminate(w http.ResponseWriter, r *http.Request, grace time.Duration) {
+	id := r.PathValue("id")
+	if p := c.pending.getByRef(id); p != nil {
+		p.markFailed(errPendingRemoved)
+		c.pending.remove(p.ID)
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	pod, ok := c.resolvePod(w, r)
 	if !ok {
 		return
@@ -347,12 +419,21 @@ func (c *containerHandlers) list(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, s)
 	}
-	// Stable order: most-recently-created first.
+	if all {
+		for _, p := range c.pending.list() {
+			out = append(out, summaryForPending(p))
+		}
+	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Created > out[j].Created })
 	writeJSON(w, http.StatusOK, out)
 }
 
 func (c *containerHandlers) inspect(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if p := c.pending.getByRef(id); p != nil {
+		writeJSON(w, http.StatusOK, inspectForPending(p))
+		return
+	}
 	pod, ok := c.resolvePod(w, r)
 	if !ok {
 		return
@@ -412,9 +493,50 @@ func (c *containerHandlers) resolvePod(w http.ResponseWriter, r *http.Request) (
 	return pod, true
 }
 
+// containerStartState distinguishes how the wait ended: running or already
+// terminated. Callers that need SPDY attach reject terminated; log readers
+// accept it.
+type containerStartState struct {
+	terminated bool
+}
+
+// waitForContainerStarted polls until kubelet reports the container running or
+// terminated. Aborts early with an error if kubelet is stuck in a fatal
+// Waiting state (image-pull failures etc.) so callers don't hang their full
+// timeout window.
+func (c *containerHandlers) waitForContainerStarted(ctx context.Context, name string) (containerStartState, error) {
+	for {
+		pod, err := c.pods.Get(ctx, name)
+		if err != nil {
+			return containerStartState{}, err
+		}
+		for _, cs := range pod.Status.ContainerStatuses {
+			if cs.State.Running != nil {
+				return containerStartState{}, nil
+			}
+			if cs.State.Terminated != nil {
+				return containerStartState{terminated: true}, nil
+			}
+		}
+		if reason, msg := k8s.FatalContainerWaitingState(pod); reason != "" {
+			return containerStartState{}, fmt.Errorf("container %s failed to start: %s: %s", name, reason, msg)
+		}
+		select {
+		case <-ctx.Done():
+			return containerStartState{}, ctx.Err()
+		case <-time.After(startPollInterval):
+		}
+	}
+}
+
 // ensureRunning blocks on Ready, then opens forwarders. Idempotent.
+// Tolerates ErrNotFound — a short-lived container may have already been
+// cleaned up by /wait?condition=removed before we get here.
 func (c *containerHandlers) ensureRunning(ctx context.Context, name string, mappings []podspec.PortMapping) error {
 	if err := c.pods.WaitForReady(ctx, name); err != nil {
+		if errors.Is(err, k8s.ErrNotFound) {
+			return nil
+		}
 		return err
 	}
 	id := podspec.ContainerID(c.pods.Namespace(), name)
@@ -433,7 +555,45 @@ func (c *containerHandlers) ensureRunning(ctx context.Context, name string, mapp
 		return fmt.Errorf("open forwarder: %w", err)
 	}
 	c.registry.Set(id, h)
+	// Watcher must outlive the /start request — daemon-scoped, not request-scoped.
+	go c.watchPodForCleanup(name, id) //nolint:gosec // G118: intentional context.Background, not request-scoped
 	return nil
+}
+
+// watchPodForCleanup polls until the container terminates (or the pod is gone)
+// and closes the forwarder, freeing the host port. Exits early if the
+// forwarder is closed by another path (stop/kill/rm/wait?condition=removed).
+func (c *containerHandlers) watchPodForCleanup(name, id string) {
+	poll := c.cleanupPoll
+	for {
+		if !c.registry.Has(id) {
+			return
+		}
+		pod, err := c.pods.Get(context.Background(), name)
+		if errors.Is(err, k8s.ErrNotFound) {
+			_ = c.registry.Close(id)
+			return
+		}
+		if err == nil {
+			if podTerminated(pod) {
+				_ = c.registry.Close(id)
+				return
+			}
+		}
+		time.Sleep(poll)
+	}
+}
+
+func podTerminated(pod *corev1.Pod) bool {
+	if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+		return true
+	}
+	for _, cs := range pod.Status.ContainerStatuses {
+		if cs.State.Terminated != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // loadMappingsFromPod decodes the ports annotation written at create time.

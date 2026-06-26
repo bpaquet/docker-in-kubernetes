@@ -232,37 +232,28 @@ docker-in-kubernetes picks one of two forwarder backends at startup, based on wh
 ### Common
 
 - On `stop`/`kill`/`rm`, the forwarder is cancelled regardless of mode.
+- A per-container background watcher polls the pod (2s default) and closes the forwarder when the container terminates or the pod is gone — so naturally-exiting containers free their host port without needing an explicit `docker rm`.
 - Forwarders are **not** restored across daemon restarts in v1 (pods persist, forwards do not). Re-running `docker start` would re-establish. See [Later](#later-deferred-features) for the planned auto-rebuild.
 
 ## Lifecycle
 
 | Docker verb | What docker-in-kubernetes does                                                              |
 | ----------- | -------------------------------------------------------------------------- |
-| `create`    | Build Pod spec, `POST` it. Pod is scheduled immediately. Wait for `Ready` and open port-forwards. |
-| `start`     | Same as `create`. If the container already exists and is running, no-op. (See note below.) |
+| `create`    | Build the Pod spec and stash it in an in-memory pending store. The pod is **not** posted to k8s yet. |
+| `start`     | Realize the staged pod via `POST /api/v1/.../pods`, then block on `Ready` and open port-forwards. No-op if already running. |
 | `stop`      | `DELETE` Pod with graceful `terminationGracePeriodSeconds` (default 10s). Close forwards. |
 | `kill`      | `DELETE` Pod with `gracePeriodSeconds=0`. Close forwards.                  |
-| `rm`        | Same as `kill` if running; no-op if pod already gone.                      |
+| `rm`        | Drop a pending entry, or delete the pod. No-op if neither exists.          |
 | `logs`      | Stream from `GET /api/v1/namespaces/{ns}/pods/{name}/log?follow=true`.     |
-| `exec`      | `POST .../pods/{name}/exec` SPDY stream, proxied through Docker's exec protocol. *(not yet implemented)* |
-| `wait`      | Short-circuited for `condition=next-exit` (returns `{StatusCode:0}` immediately so `docker run -d` doesn't hang); blocks until exit for other conditions. See [Wait endpoint quirk](#wait-endpoint-quirk). |
+| `attach`    | Hijack the connection. For a pending container, write the upgrade headers immediately (so the CLI's subscription is "established"), then wait for `/start` to realize the pod, then wait for kubelet to actually start the container before opening SPDY-attach or the log stream. |
+| `exec`      | `POST .../pods/{name}/exec` SPDY stream, multiplexed through Docker's exec protocol. |
+| `wait`      | Flush response headers up front (so `docker run -d`'s wait subscription "completes"), then block until the container exits. For `condition=removed`, also delete the pod after exit — basis of `docker run --rm`. |
 
-### Wait endpoint quirk
+### Deferred create → start
 
-`docker run -d` subscribes to `/containers/{id}/wait?condition=next-exit` before the run command can return; the docker CLI we tested against blocks reading the response body until that subscription "completes", even though for `-d` no caller actually consumes the result. Real moby blocks until the container exits — which in our setup is when the user deletes the container, so `docker run -d` would hang.
+Docker's CLI for `docker run`/`docker run --rm` issues `/create` → `/attach` → `/start` → `/wait` in that order. If `/create` realized the pod immediately we would race the attach subscription against kubelet container start, and for TTY+stdin pods we would deadlock because kubelet only flips `Ready=True` once attach connects.
 
-Workaround in v1: for `condition=next-exit` only, return `{"StatusCode": 0}` immediately. The CLI's wait goroutine completes, `docker run -d` prints the ID and returns, and no command we currently support is affected (we don't implement `--rm`, and `docker wait <id>` defaults to `not-running` which still blocks correctly).
-
-This is a deviation from upstream semantics — revisit when we model lifecycle events properly.
-
-**Lifecycle simplification (decided)**: k8s has no "stopped pod" state, so we collapse Docker's two-phase model:
-
-- `create` and `start` are equivalent: both schedule the pod and open forwards. `docker run` (create+start) works as expected.
-- `start` on an already-running container is a no-op.
-- `stop` deletes the pod — there is no "stopped" container. `docker ps -a` will not show stopped containers; once deleted, gone.
-- `start` on a previously-stopped (i.e., deleted) container returns an error: container not found.
-
-This trades fidelity for simplicity. Users who want restart semantics use `docker run` again.
+Instead `/create` only stages the pod spec in an in-memory pending store. `/start` is the call that actually `POST`s the pod to k8s. `/attach` and `/wait` against a pending container hijack/flush their response headers (CLI considers the subscription established), then block on a per-container signal until `/start` lands. `/start` signals waiters as soon as `pods.Create` succeeds — not after `WaitForReady` — so attach can connect while readiness is still settling.
 
 ## State
 

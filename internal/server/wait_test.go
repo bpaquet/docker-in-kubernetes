@@ -19,7 +19,7 @@ import (
 func TestWaitReturns0OnPodDeletion(t *testing.T) {
 	pod := managedPod("redis-1")
 	pod.Status = corev1.PodStatus{Phase: corev1.PodRunning}
-	ts, cs, _ := newTestHandler(t, pod)
+	ts, cs, _, _ := newTestHandler(t, pod)
 
 	id := podspec.ContainerID(testNamespace, "redis-1")
 
@@ -49,7 +49,7 @@ func TestWaitReturnsContainerExitCodeOnFailure(t *testing.T) {
 			},
 		},
 	}
-	ts, _, _ := newTestHandler(t, pod)
+	ts, _, _, _ := newTestHandler(t, pod)
 
 	id := podspec.ContainerID(testNamespace, "redis-1")
 	resp, err := http.Post(ts.URL+"/v1.43/containers/"+id+"/wait", "", nil)
@@ -62,7 +62,7 @@ func TestWaitReturnsContainerExitCodeOnFailure(t *testing.T) {
 }
 
 func TestWaitReturns404ForUnknown(t *testing.T) {
-	ts, _, _ := newTestHandler(t)
+	ts, _, _, _ := newTestHandler(t)
 	resp, err := http.Post(ts.URL+"/v1.43/containers/deadbeef/wait", "", nil)
 	require.NoError(t, err)
 	defer resp.Body.Close()
