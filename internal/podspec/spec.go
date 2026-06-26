@@ -152,19 +152,30 @@ func buildResources(hc dockerapi.HostConfig) (corev1.ResourceRequirements, error
 // resolve container-side usernames). Returns nil if the input is empty.
 func buildSecurityContext(user string) (*corev1.SecurityContext, error) {
 	uidStr, gidStr, hasGid := strings.Cut(user, ":")
-	uid, err := strconv.ParseInt(strings.TrimSpace(uidStr), 10, 64)
+	uid, err := parseUnixID(uidStr)
 	if err != nil {
 		return nil, fmt.Errorf("--user requires numeric uid[:gid], got %q", user)
 	}
 	sc := &corev1.SecurityContext{RunAsUser: &uid}
 	if hasGid {
-		gid, err := strconv.ParseInt(strings.TrimSpace(gidStr), 10, 64)
+		gid, err := parseUnixID(gidStr)
 		if err != nil {
 			return nil, fmt.Errorf("--user requires numeric uid[:gid], got %q", user)
 		}
 		sc.RunAsGroup = &gid
 	}
 	return sc, nil
+}
+
+func parseUnixID(s string) (int64, error) {
+	n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+	if err != nil {
+		return 0, err
+	}
+	if n < 0 {
+		return 0, fmt.Errorf("negative uid/gid")
+	}
+	return n, nil
 }
 
 func parsePortBindings(

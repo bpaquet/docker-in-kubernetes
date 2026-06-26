@@ -276,3 +276,13 @@ func TestBuildUserNonNumericRejected(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "numeric uid")
 }
+
+func TestBuildUserRejectsNegative(t *testing.T) {
+	for _, user := range []string{"-1", "1000:-2"} {
+		_, err := podspec.Build(podspec.BuildInput{
+			Namespace: "ns",
+			Request:   dockerapi.CreateRequest{Image: "redis", User: user},
+		})
+		require.Error(t, err, "user=%q should be rejected", user)
+	}
+}

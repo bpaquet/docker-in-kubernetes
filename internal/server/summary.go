@@ -97,6 +97,8 @@ func buildInspect(pod *corev1.Pod) dockerapi.ContainerInspect {
 		inspectState.FinishedAt = time.Now().UTC().Format(time.RFC3339)
 	}
 
+	// Annotations are daemon-written; a parse error means tampering or skew —
+	// fall back to zero rather than 500ing the inspect.
 	memory, _ := strconv.ParseInt(pod.Annotations[podspec.AnnotationMemory], 10, 64)
 	nanoCPUs, _ := strconv.ParseInt(pod.Annotations[podspec.AnnotationNanoCPUs], 10, 64)
 
@@ -262,6 +264,7 @@ func inspectForPending(p *pendingContainer) dockerapi.ContainerInspect {
 		_ = json.Unmarshal([]byte(raw), &env)
 	}
 	ports := portsFromAnnotation(p.Spec)
+	// See buildInspect: daemon-written annotations, fall back to zero on parse error.
 	memory, _ := strconv.ParseInt(p.Spec.Annotations[podspec.AnnotationMemory], 10, 64)
 	nanoCPUs, _ := strconv.ParseInt(p.Spec.Annotations[podspec.AnnotationNanoCPUs], 10, 64)
 	return dockerapi.ContainerInspect{
