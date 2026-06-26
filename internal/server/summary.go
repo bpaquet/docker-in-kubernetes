@@ -14,42 +14,58 @@ import (
 )
 
 func buildSummary(pod *corev1.Pod) dockerapi.ContainerSummary {
-	id := podspec.ContainerID(pod.Namespace, pod.Name)
 	state := dockerStateFromPhase(pod.Status.Phase)
-	image := pod.Annotations[podspec.AnnotationImage]
-	if image == "" && len(pod.Spec.Containers) > 0 {
-		image = pod.Spec.Containers[0].Image
-	}
-	name := pod.Annotations[podspec.AnnotationDockerName]
-	if name == "" {
-		name = pod.Name
-	}
-
-	created := time.Time{}
-	if pod.CreationTimestamp.IsZero() {
-		if s := pod.Annotations[podspec.AnnotationCreatedAt]; s != "" {
-			if t, err := time.Parse(time.RFC3339, s); err == nil {
-				created = t
-			}
-		}
-	} else {
-		created = pod.CreationTimestamp.Time
-	}
-
+	created := creationTime(pod)
 	term := terminationOf(pod)
+	mappings := parsePorts(pod)
 	return dockerapi.ContainerSummary{
-		ID:         id,
-		Names:      []string{"/" + name},
-		Image:      image,
+		ID:         podspec.ContainerID(pod.Namespace, pod.Name),
+		Names:      []string{"/" + dockerName(pod)},
+		Image:      podImage(pod),
 		ImageID:    "",
 		Command:    summaryCommand(pod),
 		Created:    created.Unix(),
-		Ports:      summaryPorts(pod),
+		Ports:      summaryPorts(mappings),
 		Labels:     userLabelsFromPod(pod),
 		State:      state,
 		Status:     status(state, created, term, time.Now()),
 		HostConfig: dockerapi.SummaryHostConfig{NetworkMode: "default"},
 	}
+}
+
+// podImage returns the image the user asked for (annotation), falling back to
+// the container spec.
+func podImage(pod *corev1.Pod) string {
+	if img := pod.Annotations[podspec.AnnotationImage]; img != "" {
+		return img
+	}
+	if len(pod.Spec.Containers) > 0 {
+		return pod.Spec.Containers[0].Image
+	}
+	return ""
+}
+
+// dockerName returns the user-supplied --name, falling back to the pod name.
+func dockerName(pod *corev1.Pod) string {
+	if n := pod.Annotations[podspec.AnnotationDockerName]; n != "" {
+		return n
+	}
+	return pod.Name
+}
+
+// creationTime prefers CreationTimestamp (set by the apiserver), then the
+// daemon-written annotation (the only source for /create'd-but-not-/start'ed
+// pods whose Spec hasn't reached k8s yet).
+func creationTime(pod *corev1.Pod) time.Time {
+	if !pod.CreationTimestamp.IsZero() {
+		return pod.CreationTimestamp.Time
+	}
+	if s := pod.Annotations[podspec.AnnotationCreatedAt]; s != "" {
+		if t, err := time.Parse(time.RFC3339, s); err == nil {
+			return t
+		}
+	}
+	return time.Time{}
 }
 
 // terminationOf returns the first container's terminated state, or nil.
@@ -83,25 +99,10 @@ func userLabelsFromPod(pod *corev1.Pod) map[string]string {
 }
 
 func buildInspect(pod *corev1.Pod) dockerapi.ContainerInspect {
-	id := podspec.ContainerID(pod.Namespace, pod.Name)
-	image := pod.Annotations[podspec.AnnotationImage]
-	if image == "" && len(pod.Spec.Containers) > 0 {
-		image = pod.Spec.Containers[0].Image
-	}
-	name := pod.Annotations[podspec.AnnotationDockerName]
-	if name == "" {
-		name = pod.Name
-	}
-
 	state := dockerStateFromPhase(pod.Status.Phase)
-	created := pod.CreationTimestamp.Time
-
-	var env []string
-	if raw := pod.Annotations[podspec.AnnotationEnv]; raw != "" {
-		_ = json.Unmarshal([]byte(raw), &env)
-	}
-
-	ports := portsFromAnnotation(pod)
+	mappings := parsePorts(pod)
+	bindings := portsBindings(mappings)
+	image := podImage(pod)
 
 	var startedAt time.Time
 	if pod.Status.StartTime != nil {
@@ -125,26 +126,37 @@ func buildInspect(pod *corev1.Pod) dockerapi.ContainerInspect {
 	nanoCPUs, _ := strconv.ParseInt(pod.Annotations[podspec.AnnotationNanoCPUs], 10, 64)
 
 	return dockerapi.ContainerInspect{
-		ID:      id,
-		Created: created.UTC().Format(time.RFC3339Nano),
+		ID:      podspec.ContainerID(pod.Namespace, pod.Name),
+		Created: creationTime(pod).UTC().Format(time.RFC3339Nano),
 		State:   inspectState,
 		Image:   image,
-		Name:    "/" + name,
+		Name:    "/" + dockerName(pod),
 		Config: dockerapi.InspectConfig{
 			Image:    image,
 			Hostname: pod.Spec.Hostname,
-			Env:      env,
+			Env:      envFromPod(pod),
 			User:     pod.Annotations[podspec.AnnotationUser],
 			Labels:   userLabelsFromPod(pod),
 		},
 		HostConfig: dockerapi.HostConfig{
 			NetworkMode:  "default",
-			PortBindings: ports,
+			PortBindings: bindings,
 			Memory:       memory,
 			NanoCPUs:     nanoCPUs,
 		},
-		NetworkSettings: dockerapi.InspectNetworkInfo{Ports: ports},
+		NetworkSettings: dockerapi.InspectNetworkInfo{Ports: bindings},
 	}
+}
+
+// envFromPod decodes the daemon-written env annotation. Parse failure → nil.
+func envFromPod(pod *corev1.Pod) []string {
+	raw := pod.Annotations[podspec.AnnotationEnv]
+	if raw == "" {
+		return nil
+	}
+	var env []string
+	_ = json.Unmarshal([]byte(raw), &env)
+	return env
 }
 
 func summaryCommand(pod *corev1.Pod) string {
@@ -155,7 +167,8 @@ func summaryCommand(pod *corev1.Pod) string {
 	return strings.Join(append(append([]string{}, c.Command...), c.Args...), " ")
 }
 
-func summaryPorts(pod *corev1.Pod) []dockerapi.Port {
+// parsePorts decodes the daemon-written ports annotation. Empty/parse error → nil.
+func parsePorts(pod *corev1.Pod) []podspec.PortMapping {
 	raw := pod.Annotations[podspec.AnnotationPorts]
 	if raw == "" {
 		return nil
@@ -164,8 +177,15 @@ func summaryPorts(pod *corev1.Pod) []dockerapi.Port {
 	if err := json.Unmarshal([]byte(raw), &mapped); err != nil {
 		return nil
 	}
-	out := make([]dockerapi.Port, 0, len(mapped))
-	for _, m := range mapped {
+	return mapped
+}
+
+func summaryPorts(mappings []podspec.PortMapping) []dockerapi.Port {
+	if len(mappings) == 0 {
+		return nil
+	}
+	out := make([]dockerapi.Port, 0, len(mappings))
+	for _, m := range mappings {
 		p := dockerapi.Port{
 			PrivatePort: m.ContainerPort,
 			Type:        m.Protocol,
@@ -181,17 +201,12 @@ func summaryPorts(pod *corev1.Pod) []dockerapi.Port {
 	return out
 }
 
-func portsFromAnnotation(pod *corev1.Pod) map[string][]dockerapi.PortBinding {
-	raw := pod.Annotations[podspec.AnnotationPorts]
-	if raw == "" {
+func portsBindings(mappings []podspec.PortMapping) map[string][]dockerapi.PortBinding {
+	if len(mappings) == 0 {
 		return nil
 	}
-	var mapped []podspec.PortMapping
-	if err := json.Unmarshal([]byte(raw), &mapped); err != nil {
-		return nil
-	}
-	out := make(map[string][]dockerapi.PortBinding, len(mapped))
-	for _, m := range mapped {
+	out := make(map[string][]dockerapi.PortBinding, len(mappings))
+	for _, m := range mappings {
 		key := fmt.Sprintf("%d/%s", m.ContainerPort, m.Protocol)
 		var bindings []dockerapi.PortBinding
 		if m.HostPort != "" {
@@ -265,57 +280,16 @@ func rfc3339(t time.Time) string {
 	return t.UTC().Format(time.RFC3339Nano)
 }
 
+// summaryForPending and inspectForPending route a /create'd-but-not-/start'ed
+// container through the same builders as a live pod. The pod Spec already
+// carries every annotation buildSummary/buildInspect read (image, name, env,
+// labels, ports, user, memory, cpus, created-at); the only thing it lacks is
+// the apiserver's CreationTimestamp, which creationTime() falls back from to
+// the AnnotationCreatedAt annotation.
 func summaryForPending(p *pendingContainer) dockerapi.ContainerSummary {
-	name := p.DockerName
-	if name == "" {
-		name = p.Spec.Name
-	}
-	return dockerapi.ContainerSummary{
-		ID:         p.ID,
-		Names:      []string{"/" + name},
-		Image:      p.Spec.Annotations[podspec.AnnotationImage],
-		Command:    summaryCommand(p.Spec),
-		Created:    p.CreatedAt.Unix(),
-		Ports:      summaryPorts(p.Spec),
-		Labels:     userLabelsFromPod(p.Spec),
-		State:      "created",
-		Status:     "Created",
-		HostConfig: dockerapi.SummaryHostConfig{NetworkMode: "default"},
-	}
+	return buildSummary(p.Spec)
 }
 
 func inspectForPending(p *pendingContainer) dockerapi.ContainerInspect {
-	name := p.DockerName
-	if name == "" {
-		name = p.Spec.Name
-	}
-	var env []string
-	if raw := p.Spec.Annotations[podspec.AnnotationEnv]; raw != "" {
-		_ = json.Unmarshal([]byte(raw), &env)
-	}
-	ports := portsFromAnnotation(p.Spec)
-	// See buildInspect: daemon-written annotations, fall back to zero on parse error.
-	memory, _ := strconv.ParseInt(p.Spec.Annotations[podspec.AnnotationMemory], 10, 64)
-	nanoCPUs, _ := strconv.ParseInt(p.Spec.Annotations[podspec.AnnotationNanoCPUs], 10, 64)
-	return dockerapi.ContainerInspect{
-		ID:      p.ID,
-		Created: p.CreatedAt.UTC().Format(time.RFC3339Nano),
-		Image:   p.Spec.Annotations[podspec.AnnotationImage],
-		Name:    "/" + name,
-		State:   dockerapi.InspectState{Status: "created"},
-		Config: dockerapi.InspectConfig{
-			Image:    p.Spec.Annotations[podspec.AnnotationImage],
-			Hostname: p.Spec.Spec.Hostname,
-			Env:      env,
-			User:     p.Spec.Annotations[podspec.AnnotationUser],
-			Labels:   userLabelsFromPod(p.Spec),
-		},
-		HostConfig: dockerapi.HostConfig{
-			NetworkMode:  "default",
-			PortBindings: ports,
-			Memory:       memory,
-			NanoCPUs:     nanoCPUs,
-		},
-		NetworkSettings: dockerapi.InspectNetworkInfo{Ports: ports},
-	}
+	return buildInspect(p.Spec)
 }

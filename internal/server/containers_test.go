@@ -291,6 +291,66 @@ func TestInspectReturnsPodFields(t *testing.T) {
 	assert.True(t, got.State.Running)
 }
 
+// TestPendingContainerRoutesThroughSharedBuilder locks in that a /create'd-
+// but-not-/start'ed container surfaces every annotation-backed field
+// (ports, labels, env, user) via the same buildSummary/buildInspect path as a
+// live pod, with State pinned to "created".
+func TestPendingContainerRoutesThroughSharedBuilder(t *testing.T) {
+	ts, _, _, _ := newTestHandler(t)
+
+	body, _ := json.Marshal(dockerapi.CreateRequest{
+		Image:  "redis:7",
+		Env:    []string{"FOO=bar"},
+		Labels: map[string]string{"team": "platform"},
+		User:   "1000:1000",
+		HostConfig: dockerapi.HostConfig{
+			Memory:   256 * 1024 * 1024,
+			NanoCPUs: 500_000_000,
+			PortBindings: map[string][]dockerapi.PortBinding{
+				"6379/tcp": {{HostPort: "6380"}},
+			},
+		},
+	})
+	resp, err := http.Post(ts.URL+"/v1.43/containers/create?name=staged", "application/json", bytes.NewReader(body))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+	var created dockerapi.CreateResponse
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&created))
+
+	psResp, err := http.Get(ts.URL + "/v1.43/containers/json?all=1")
+	require.NoError(t, err)
+	defer psResp.Body.Close()
+	var ps []dockerapi.ContainerSummary
+	require.NoError(t, json.NewDecoder(psResp.Body).Decode(&ps))
+	require.Len(t, ps, 1)
+	assert.Equal(t, created.ID, ps[0].ID)
+	assert.Equal(t, "created", ps[0].State)
+	assert.Equal(t, "Created", ps[0].Status)
+	assert.Equal(t, "redis:7", ps[0].Image)
+	assert.Equal(t, "/staged", ps[0].Names[0])
+	assert.Equal(t, map[string]string{"team": "platform"}, ps[0].Labels)
+	require.Len(t, ps[0].Ports, 1)
+	assert.Equal(t, uint16(6380), ps[0].Ports[0].PublicPort)
+	assert.Equal(t, uint16(6379), ps[0].Ports[0].PrivatePort)
+
+	inspectResp, err := http.Get(ts.URL + "/v1.43/containers/" + created.ID + "/json")
+	require.NoError(t, err)
+	defer inspectResp.Body.Close()
+	var insp dockerapi.ContainerInspect
+	require.NoError(t, json.NewDecoder(inspectResp.Body).Decode(&insp))
+	assert.Equal(t, created.ID, insp.ID)
+	assert.Equal(t, "created", insp.State.Status)
+	assert.False(t, insp.State.Running)
+	assert.Equal(t, []string{"FOO=bar"}, insp.Config.Env)
+	assert.Equal(t, map[string]string{"team": "platform"}, insp.Config.Labels)
+	assert.Equal(t, "1000:1000", insp.Config.User)
+	assert.Equal(t, int64(256*1024*1024), insp.HostConfig.Memory)
+	assert.Equal(t, int64(500_000_000), insp.HostConfig.NanoCPUs)
+	require.NotNil(t, insp.HostConfig.PortBindings["6379/tcp"])
+	assert.Equal(t, "6380", insp.HostConfig.PortBindings["6379/tcp"][0].HostPort)
+}
+
 func TestForwarderClosedOnContainerExit(t *testing.T) {
 	ts, cs, _, registry := newTestHandler(t)
 
