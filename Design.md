@@ -219,6 +219,14 @@ API version: advertise `1.43` (Docker Engine 24.0) via `/_ping` `Api-Version` he
   - `docker-in-kubernetes.io/ports=<json of -p mappings>` (only when non-empty)
   - `docker-in-kubernetes.io/env=<json of -e>` (only when non-empty; for `docker inspect` fidelity)
   - `docker-in-kubernetes.io/labels=<json of -l user labels>` (only when non-empty)
+  - `docker-in-kubernetes.io/user=<original --user value>` (only when set; for `docker inspect`)
+  - `docker-in-kubernetes.io/memory=<bytes>` and `docker-in-kubernetes.io/nano-cpus=<billionths>` (only when set; round-trip the originals through `docker inspect`)
+
+### Resources and user
+
+- `--memory` / `-m` → `container.resources.requests.memory` *and* `.limits.memory` (request == limit). Decoded back from the `memory` annotation for `docker inspect`'s `HostConfig.Memory` (bytes).
+- `--cpus` → `container.resources.requests.cpu` *and* `.limits.cpu` in milli-cores (ceil of `nanoCPUs / 1_000_000`). Decoded back from the `nano-cpus` annotation for `HostConfig.NanoCpus`.
+- `--user` → `container.securityContext.runAsUser` (and `runAsGroup` when `uid:gid` is given). Numeric only — k8s can't resolve container-side usernames; non-numeric input is rejected with HTTP 400 at `/containers/create`.
 
 ## Port forwarding
 

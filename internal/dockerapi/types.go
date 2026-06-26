@@ -9,6 +9,7 @@ type CreateRequest struct {
 	Cmd          []string            `json:"Cmd,omitempty"`
 	Entrypoint   StringOrSlice       `json:"Entrypoint,omitempty"`
 	WorkingDir   string              `json:"WorkingDir,omitempty"`
+	User         string              `json:"User,omitempty"`
 	Labels       map[string]string   `json:"Labels,omitempty"`
 	ExposedPorts map[string]struct{} `json:"ExposedPorts,omitempty"`
 	HostConfig   HostConfig          `json:"HostConfig,omitempty"`
@@ -24,6 +25,10 @@ type HostConfig struct {
 	PortBindings map[string][]PortBinding `json:"PortBindings,omitempty"`
 	NetworkMode  string                   `json:"NetworkMode,omitempty"`
 	AutoRemove   bool                     `json:"AutoRemove,omitempty"`
+	// Memory is the container memory limit in bytes (docker --memory / -m).
+	Memory int64 `json:"Memory,omitempty"`
+	// NanoCPUs is the CPU limit in billionths of a CPU (docker --cpus).
+	NanoCPUs int64 `json:"NanoCpus,omitempty"`
 }
 
 // PortBinding is one host:container port mapping. HostIP is ignored (we always bind 127.0.0.1).
@@ -103,6 +108,7 @@ type InspectConfig struct {
 	Cmd          []string            `json:"Cmd"`
 	Entrypoint   []string            `json:"Entrypoint"`
 	WorkingDir   string              `json:"WorkingDir"`
+	User         string              `json:"User"`
 	Labels       map[string]string   `json:"Labels"`
 	ExposedPorts map[string]struct{} `json:"ExposedPorts"`
 }

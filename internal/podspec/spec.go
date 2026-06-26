@@ -9,6 +9,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/bpaquet/docker-in-kubernetes/internal/dockerapi"
@@ -112,7 +113,69 @@ func Build(in BuildInput) (*BuildResult, error) {
 		pod.Spec.Containers[0].WorkingDir = in.Request.WorkingDir
 	}
 
+	res, err := buildResources(in.Request.HostConfig)
+	if err != nil {
+		return nil, err
+	}
+	pod.Spec.Containers[0].Resources = res
+
+	if in.Request.User != "" {
+		sc, err := buildSecurityContext(in.Request.User)
+		if err != nil {
+			return nil, err
+		}
+		pod.Spec.Containers[0].SecurityContext = sc
+	}
+
 	return &BuildResult{Pod: pod, PodName: podName, PortMappings: ports}, nil
+}
+
+// buildResources translates Docker --memory and --cpus into k8s requests/limits.
+// Per project policy: request == limit.
+func buildResources(hc dockerapi.HostConfig) (corev1.ResourceRequirements, error) {
+	if hc.Memory == 0 && hc.NanoCPUs == 0 {
+		return corev1.ResourceRequirements{}, nil
+	}
+	rl := corev1.ResourceList{}
+	if hc.Memory > 0 {
+		rl[corev1.ResourceMemory] = *resource.NewQuantity(hc.Memory, resource.BinarySI)
+	}
+	if hc.NanoCPUs > 0 {
+		// k8s milli-cores from billionths of a CPU.
+		milli := (hc.NanoCPUs + 999_999) / 1_000_000
+		rl[corev1.ResourceCPU] = *resource.NewMilliQuantity(milli, resource.DecimalSI)
+	}
+	return corev1.ResourceRequirements{Requests: rl.DeepCopy(), Limits: rl}, nil
+}
+
+// buildSecurityContext parses `--user uid[:gid]` (numeric only — k8s can't
+// resolve container-side usernames). Returns nil if the input is empty.
+func buildSecurityContext(user string) (*corev1.SecurityContext, error) {
+	uidStr, gidStr, hasGid := strings.Cut(user, ":")
+	uid, err := parseUnixID(uidStr)
+	if err != nil {
+		return nil, fmt.Errorf("--user requires numeric uid[:gid], got %q", user)
+	}
+	sc := &corev1.SecurityContext{RunAsUser: &uid}
+	if hasGid {
+		gid, err := parseUnixID(gidStr)
+		if err != nil {
+			return nil, fmt.Errorf("--user requires numeric uid[:gid], got %q", user)
+		}
+		sc.RunAsGroup = &gid
+	}
+	return sc, nil
+}
+
+func parseUnixID(s string) (int64, error) {
+	n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+	if err != nil {
+		return 0, err
+	}
+	if n < 0 {
+		return 0, fmt.Errorf("negative uid/gid")
+	}
+	return n, nil
 }
 
 func parsePortBindings(
@@ -234,6 +297,15 @@ func buildAnnotations(in BuildInput, ports []PortMapping) (map[string]string, er
 		if err := marshalAnnotation(out, AnnotationLabels, in.Request.Labels); err != nil {
 			return nil, err
 		}
+	}
+	if in.Request.User != "" {
+		out[AnnotationUser] = in.Request.User
+	}
+	if in.Request.HostConfig.Memory > 0 {
+		out[AnnotationMemory] = strconv.FormatInt(in.Request.HostConfig.Memory, 10)
+	}
+	if in.Request.HostConfig.NanoCPUs > 0 {
+		out[AnnotationNanoCPUs] = strconv.FormatInt(in.Request.HostConfig.NanoCPUs, 10)
 	}
 	return out, nil
 }

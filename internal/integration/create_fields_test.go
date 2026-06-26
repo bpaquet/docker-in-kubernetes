@@ -168,3 +168,64 @@ func requireLogsContain(t *testing.T, env *testEnv, id, want string) {
 		return strings.Contains(out, want)
 	}, 30*time.Second, 500*time.Millisecond, "docker logs should contain %q for %s", want, id)
 }
+
+// docker run --memory --cpus --user: pod spec gets matching resources and
+// security context; `id -u` confirms the runtime uid.
+func TestCreateResourcesAndUser(t *testing.T) {
+	env := newEnv(t)
+	name := "it-res-" + randSuffix()
+	cleanupPod(t, env.Pods, name)
+
+	out, err := env.docker(t, 60*time.Second,
+		"run", "-d", "--name", name,
+		"--memory", "64m",
+		"--cpus", "0.25",
+		"--user", "1000:1001",
+		"alpine:3",
+		"sh", "-c", "id -u; id -g; sleep 60",
+	)
+	require.NoError(t, err, "docker run output:\n%s", out)
+
+	pod, err := env.Pods.Get(t.Context(), name)
+	require.NoError(t, err)
+	require.Len(t, pod.Spec.Containers, 1)
+	c := pod.Spec.Containers[0]
+
+	mem := c.Resources.Limits["memory"]
+	cpu := c.Resources.Limits["cpu"]
+	assert.Equal(t, "64Mi", mem.String())
+	assert.Equal(t, "250m", cpu.String())
+
+	memReq := c.Resources.Requests["memory"]
+	cpuReq := c.Resources.Requests["cpu"]
+	assert.Equal(t, mem.String(), memReq.String())
+	assert.Equal(t, cpu.String(), cpuReq.String())
+
+	require.NotNil(t, c.SecurityContext)
+	require.NotNil(t, c.SecurityContext.RunAsUser)
+	require.NotNil(t, c.SecurityContext.RunAsGroup)
+	assert.Equal(t, int64(1000), *c.SecurityContext.RunAsUser)
+	assert.Equal(t, int64(1001), *c.SecurityContext.RunAsGroup)
+
+	requireLogsContain(t, env, name, "1000")
+	requireLogsContain(t, env, name, "1001")
+
+	inspectOut, err := env.docker(t, 15*time.Second, "inspect", name)
+	require.NoError(t, err)
+	assert.Contains(t, inspectOut, `"User": "1000:1001"`)
+	assert.Contains(t, inspectOut, `"Memory": 67108864`)
+}
+
+func TestCreateRejectsNonNumericUser(t *testing.T) {
+	env := newEnv(t)
+	name := "it-baduser-" + randSuffix()
+	cleanupPod(t, env.Pods, name)
+
+	out, err := env.docker(t, 30*time.Second,
+		"run", "-d", "--name", name,
+		"--user", "root",
+		"alpine:3", "sleep", "60",
+	)
+	require.Error(t, err, "expected non-numeric --user to be rejected; got:\n%s", out)
+	assert.Contains(t, strings.ToLower(out), "numeric uid")
+}

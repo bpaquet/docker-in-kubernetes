@@ -202,3 +202,87 @@ func TestBuildPreservesCmdAndEntrypoint(t *testing.T) {
 	assert.Equal(t, []string{"/usr/local/bin/redis-server"}, c.Command)
 	assert.Equal(t, []string{"--port", "6379"}, c.Args)
 }
+
+func TestBuildAppliesResources(t *testing.T) {
+	res, err := podspec.Build(podspec.BuildInput{
+		Namespace: "ns",
+		Request: dockerapi.CreateRequest{
+			Image: "redis",
+			HostConfig: dockerapi.HostConfig{
+				Memory:   128 * 1024 * 1024,
+				NanoCPUs: 500_000_000, // 0.5 CPU
+			},
+		},
+	})
+	require.NoError(t, err)
+	c := res.Pod.Spec.Containers[0]
+	require.NotNil(t, c.Resources.Requests)
+	require.NotNil(t, c.Resources.Limits)
+	mem := c.Resources.Limits["memory"]
+	cpu := c.Resources.Limits["cpu"]
+	assert.Equal(t, "128Mi", mem.String())
+	assert.Equal(t, "500m", cpu.String())
+	memReq := c.Resources.Requests["memory"]
+	cpuReq := c.Resources.Requests["cpu"]
+	assert.Equal(t, mem.String(), memReq.String(), "request should equal limit")
+	assert.Equal(t, cpu.String(), cpuReq.String(), "request should equal limit")
+	assert.Equal(t, "134217728", res.Pod.Annotations[podspec.AnnotationMemory])
+	assert.Equal(t, "500000000", res.Pod.Annotations[podspec.AnnotationNanoCPUs])
+}
+
+func TestBuildResourcesOmittedWhenZero(t *testing.T) {
+	res, err := podspec.Build(podspec.BuildInput{
+		Namespace: "ns",
+		Request:   dockerapi.CreateRequest{Image: "redis"},
+	})
+	require.NoError(t, err)
+	c := res.Pod.Spec.Containers[0]
+	assert.Empty(t, c.Resources.Requests)
+	assert.Empty(t, c.Resources.Limits)
+}
+
+func TestBuildUserNumericUIDOnly(t *testing.T) {
+	res, err := podspec.Build(podspec.BuildInput{
+		Namespace: "ns",
+		Request:   dockerapi.CreateRequest{Image: "redis", User: "1000"},
+	})
+	require.NoError(t, err)
+	sc := res.Pod.Spec.Containers[0].SecurityContext
+	require.NotNil(t, sc)
+	require.NotNil(t, sc.RunAsUser)
+	assert.Equal(t, int64(1000), *sc.RunAsUser)
+	assert.Nil(t, sc.RunAsGroup)
+	assert.Equal(t, "1000", res.Pod.Annotations[podspec.AnnotationUser])
+}
+
+func TestBuildUserWithGID(t *testing.T) {
+	res, err := podspec.Build(podspec.BuildInput{
+		Namespace: "ns",
+		Request:   dockerapi.CreateRequest{Image: "redis", User: "1000:1001"},
+	})
+	require.NoError(t, err)
+	sc := res.Pod.Spec.Containers[0].SecurityContext
+	require.NotNil(t, sc)
+	require.NotNil(t, sc.RunAsGroup)
+	assert.Equal(t, int64(1000), *sc.RunAsUser)
+	assert.Equal(t, int64(1001), *sc.RunAsGroup)
+}
+
+func TestBuildUserNonNumericRejected(t *testing.T) {
+	_, err := podspec.Build(podspec.BuildInput{
+		Namespace: "ns",
+		Request:   dockerapi.CreateRequest{Image: "redis", User: "root"},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "numeric uid")
+}
+
+func TestBuildUserRejectsNegative(t *testing.T) {
+	for _, user := range []string{"-1", "1000:-2"} {
+		_, err := podspec.Build(podspec.BuildInput{
+			Namespace: "ns",
+			Request:   dockerapi.CreateRequest{Image: "redis", User: user},
+		})
+		require.Error(t, err, "user=%q should be rejected", user)
+	}
+}
