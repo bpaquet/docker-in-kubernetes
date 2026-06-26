@@ -113,6 +113,27 @@ func TestBuildExposedPortsContributeToContainerPorts(t *testing.T) {
 	assert.Empty(t, res.PortMappings[0].HostPort)
 }
 
+func TestBuildMultipleHostPortsToSameContainerPort(t *testing.T) {
+	req := dockerapi.CreateRequest{
+		Image: "redis",
+		HostConfig: dockerapi.HostConfig{
+			PortBindings: map[string][]dockerapi.PortBinding{
+				"6379/tcp": {{HostPort: "6379"}, {HostPort: "6380"}},
+			},
+		},
+	}
+	res, err := podspec.Build(podspec.BuildInput{Namespace: "ns", Request: req})
+	require.NoError(t, err)
+
+	require.Len(t, res.PortMappings, 2)
+	hostPorts := []string{res.PortMappings[0].HostPort, res.PortMappings[1].HostPort}
+	assert.ElementsMatch(t, []string{"6379", "6380"}, hostPorts)
+
+	// The k8s pod spec only needs one ContainerPort entry; k8s rejects duplicates.
+	require.Len(t, res.Pod.Spec.Containers[0].Ports, 1)
+	assert.Equal(t, int32(6379), res.Pod.Spec.Containers[0].Ports[0].ContainerPort)
+}
+
 func TestBuildPortBindingsTakePrecedence(t *testing.T) {
 	req := dockerapi.CreateRequest{
 		Image: "nginx",
