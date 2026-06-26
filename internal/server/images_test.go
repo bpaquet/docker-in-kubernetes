@@ -126,6 +126,33 @@ func TestImagesInspect(t *testing.T) {
 		defer resp.Body.Close()
 		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 	})
+
+	t.Run("by id prefix", func(t *testing.T) {
+		var id string
+		for _, s := range mustListStore(t, ts) {
+			if len(s.RepoTags) > 0 && s.RepoTags[0] == "redis:alpine" {
+				id = s.ID
+				break
+			}
+		}
+		require.NotEmpty(t, id)
+		short := strings.TrimPrefix(id, "sha256:")[:12]
+
+		resp, err := http.Get(ts.URL + "/v1.43/images/" + short + "/json")
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+	})
+}
+
+func mustListStore(t *testing.T, ts *httptest.Server) []dockerapi.ImageSummary {
+	t.Helper()
+	resp, err := http.Get(ts.URL + "/v1.43/images/json")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	var out []dockerapi.ImageSummary
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
+	return out
 }
 
 func TestImagesDelete(t *testing.T) {

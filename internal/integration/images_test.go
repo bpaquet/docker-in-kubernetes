@@ -49,6 +49,18 @@ func TestDockerImageInspect(t *testing.T) {
 	assert.Contains(t, out, "linux")
 }
 
+// Unformatted inspect exercises every field the CLI's pretty-printer touches.
+func TestDockerImageInspectUnformatted(t *testing.T) {
+	env := newEnv(t)
+	_, err := env.docker(t, 30*time.Second, "pull", "alpine:3")
+	require.NoError(t, err)
+
+	out, err := env.docker(t, 10*time.Second, "image", "inspect", "alpine:3")
+	require.NoError(t, err, "docker image inspect failed:\n%s", out)
+	assert.Contains(t, out, "alpine:3")
+	assert.Contains(t, out, "sha256:")
+}
+
 func TestDockerImageInspectMissing(t *testing.T) {
 	env := newEnv(t)
 	out, err := env.docker(t, 10*time.Second, "image", "inspect", "ghost:tag")
