@@ -47,6 +47,9 @@ func TestConnectLocalMode(t *testing.T) {
 }
 
 func TestConnectInClusterMissingSAFails(t *testing.T) {
+	if _, err := os.Stat("/var/run/secrets/kubernetes.io/serviceaccount/token"); err == nil {
+		t.Skip("real in-cluster service account token present; in-cluster config would succeed")
+	}
 	t.Setenv("KUBERNETES_SERVICE_HOST", "127.0.0.1")
 	t.Setenv("KUBERNETES_SERVICE_PORT", "6443")
 	_, err := k8s.Connect(k8s.ClientConfig{})
