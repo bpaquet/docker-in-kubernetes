@@ -72,6 +72,7 @@ func New(cfg Config) http.Handler {
 			forwarder: cfg.Forwarder,
 			registry:  cfg.Forwards,
 			execs:     newExecStore(),
+			pending:   newPendingStore(),
 			logger:    logger,
 		}
 		ch.register(mux)

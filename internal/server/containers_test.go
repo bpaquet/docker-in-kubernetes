@@ -106,6 +106,12 @@ func TestCreateContainerHappyPath(t *testing.T) {
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
 	assert.Equal(t, podspec.ContainerID(testNamespace, "myredis"), got.ID)
 
+	// /create only stages; /start realizes the pod.
+	startResp, err := http.Post(ts.URL+"/v1.43/containers/"+got.ID+"/start", "", nil)
+	require.NoError(t, err)
+	startResp.Body.Close()
+	assert.Equal(t, http.StatusNoContent, startResp.StatusCode)
+
 	pod, err := cs.CoreV1().Pods(testNamespace).Get(t.Context(), "myredis", metav1.GetOptions{})
 	require.NoError(t, err)
 	assert.Equal(t, "redis", pod.Spec.Containers[0].Image)
@@ -123,14 +129,13 @@ func TestCreateContainerRejectsEmptyImage(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
-// /start is idempotent on a missing container — see containers.go for why.
-func TestStartOnUnknownReturns204(t *testing.T) {
+func TestStartOnUnknownReturns404(t *testing.T) {
 	ts, _, _ := newTestHandler(t)
 
 	resp, err := http.Post(ts.URL+"/v1.43/containers/deadbeef/start", "", nil)
 	require.NoError(t, err)
 	defer resp.Body.Close()
-	assert.Equal(t, http.StatusNoContent, resp.StatusCode)
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
 
 func TestStartIdempotent(t *testing.T) {

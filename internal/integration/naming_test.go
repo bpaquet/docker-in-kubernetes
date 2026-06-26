@@ -36,7 +36,7 @@ func TestDockerRunDuplicateNameFails(t *testing.T) {
 
 	out, err = env.docker(t, 30*time.Second, "run", "-d", "--name", name, "alpine:3", "sleep", "60")
 	require.Error(t, err, "second run with same name should fail; output:\n%s", out)
-	assert.Contains(t, strings.ToLower(out), "already exists", "expected duplicate-name error; got:\n%s", out)
+	assert.Contains(t, strings.ToLower(out), "already in use", "expected duplicate-name error; got:\n%s", out)
 }
 
 func TestDockerRunWithLabels(t *testing.T) {
