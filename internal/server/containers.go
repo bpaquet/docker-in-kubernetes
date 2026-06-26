@@ -669,13 +669,14 @@ func podTerminated(pod *corev1.Pod) bool {
 	return false
 }
 
-// allocateHostPorts assigns a free 127.0.0.1 TCP port to every mapping with
-// empty HostPort. Mirrors Docker's "publish a random ephemeral port"
-// semantics (testcontainers relies on it). Bind→discover→close races with
-// the forwarder rebind, but that race exists in moby too.
+// allocateHostPorts assigns a free 127.0.0.1 TCP port to every mapping that
+// asked for a random one. Docker accepts both "" and "0" as the
+// "allocate-anything" signal (testcontainers v0.43 sends "0"); we treat
+// them the same. Bind→discover→close races with the forwarder rebind, but
+// that race exists in moby too.
 func allocateHostPorts(mappings []podspec.PortMapping) error {
 	for i := range mappings {
-		if mappings[i].HostPort != "" {
+		if mappings[i].HostPort != "" && mappings[i].HostPort != "0" {
 			continue
 		}
 		port, err := pickFreeTCPPort()

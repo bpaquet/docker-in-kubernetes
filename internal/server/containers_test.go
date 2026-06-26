@@ -133,43 +133,48 @@ func TestCreateContainerRejectsEmptyImage(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
-// Testcontainers sends ExposedPorts + PortBindings with empty HostPort; the
-// daemon must allocate a free port and surface it via NetworkSettings.Ports
-// so testcontainers' Endpoint() can resolve a real host:port.
-func TestCreateAllocatesRandomHostPortForEmptyBinding(t *testing.T) {
-	ts, _, _, _ := newTestHandler(t)
+// Testcontainers / Docker CLI request a random host port via either an
+// empty string or "0" in PortBindings. The daemon must allocate a free
+// port and surface it via NetworkSettings.Ports so Endpoint() can resolve
+// a real host:port.
+func TestCreateAllocatesRandomHostPort(t *testing.T) {
+	for _, signal := range []string{"", "0"} {
+		t.Run("HostPort="+signal, func(t *testing.T) {
+			ts, _, _, _ := newTestHandler(t)
 
-	body, _ := json.Marshal(dockerapi.CreateRequest{
-		Image:        "redis",
-		ExposedPorts: map[string]struct{}{"6379/tcp": {}},
-		HostConfig: dockerapi.HostConfig{
-			PortBindings: map[string][]dockerapi.PortBinding{
-				"6379/tcp": {{HostPort: ""}},
-			},
-		},
-	})
-	resp, err := http.Post(ts.URL+"/v1.43/containers/create", "application/json", bytes.NewReader(body))
-	require.NoError(t, err)
-	var created dockerapi.CreateResponse
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&created))
-	resp.Body.Close()
+			body, _ := json.Marshal(dockerapi.CreateRequest{
+				Image:        "redis",
+				ExposedPorts: map[string]struct{}{"6379/tcp": {}},
+				HostConfig: dockerapi.HostConfig{
+					PortBindings: map[string][]dockerapi.PortBinding{
+						"6379/tcp": {{HostPort: signal}},
+					},
+				},
+			})
+			resp, err := http.Post(ts.URL+"/v1.43/containers/create", "application/json", bytes.NewReader(body))
+			require.NoError(t, err)
+			var created dockerapi.CreateResponse
+			require.NoError(t, json.NewDecoder(resp.Body).Decode(&created))
+			resp.Body.Close()
 
-	startResp, err := http.Post(ts.URL+"/v1.43/containers/"+created.ID+"/start", "", nil)
-	require.NoError(t, err)
-	startResp.Body.Close()
+			startResp, err := http.Post(ts.URL+"/v1.43/containers/"+created.ID+"/start", "", nil)
+			require.NoError(t, err)
+			startResp.Body.Close()
 
-	jsonResp, err := http.Get(ts.URL + "/v1.43/containers/" + created.ID + "/json")
-	require.NoError(t, err)
-	defer jsonResp.Body.Close()
+			jsonResp, err := http.Get(ts.URL + "/v1.43/containers/" + created.ID + "/json")
+			require.NoError(t, err)
+			defer jsonResp.Body.Close()
 
-	var inspect dockerapi.ContainerInspect
-	require.NoError(t, json.NewDecoder(jsonResp.Body).Decode(&inspect))
+			var inspect dockerapi.ContainerInspect
+			require.NoError(t, json.NewDecoder(jsonResp.Body).Decode(&inspect))
 
-	bindings := inspect.NetworkSettings.Ports["6379/tcp"]
-	require.Len(t, bindings, 1)
-	assert.Equal(t, "127.0.0.1", bindings[0].HostIP)
-	assert.NotEmpty(t, bindings[0].HostPort, "expected allocated host port")
-	assert.NotEqual(t, "0", bindings[0].HostPort)
+			bindings := inspect.NetworkSettings.Ports["6379/tcp"]
+			require.Len(t, bindings, 1)
+			assert.Equal(t, "127.0.0.1", bindings[0].HostIP)
+			assert.NotEmpty(t, bindings[0].HostPort, "expected allocated host port")
+			assert.NotEqual(t, "0", bindings[0].HostPort)
+		})
+	}
 }
 
 // Testcontainers probes /containers/json with a label filter to look up its
