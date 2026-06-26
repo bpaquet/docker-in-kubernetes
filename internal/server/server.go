@@ -32,6 +32,8 @@ type PodStore interface {
 	FindByID(ctx context.Context, id string) (*corev1.Pod, error)
 	WaitForReady(ctx context.Context, name string) error
 	StreamLogs(ctx context.Context, name string, opts k8s.LogOptions) (io.ReadCloser, error)
+	Attach(ctx context.Context, podName string, opts k8s.StreamOptions) error
+	Exec(ctx context.Context, podName string, cmd []string, opts k8s.StreamOptions) error
 	Namespace() string
 }
 
@@ -67,9 +69,11 @@ func New(cfg Config) http.Handler {
 			pods:      cfg.Pods,
 			forwarder: cfg.Forwarder,
 			registry:  cfg.Forwards,
+			execs:     newExecStore(),
 			logger:    logger,
 		}
 		ch.register(mux)
+		ch.registerExec(mux)
 	}
 
 	return chain(mux, stripVersionPrefix, logRequests(logger))
@@ -113,6 +117,10 @@ func (s *statusRecorder) WriteHeader(code int) {
 	s.status = code
 	s.ResponseWriter.WriteHeader(code)
 }
+
+// Unwrap lets http.NewResponseController walk past us to the real writer,
+// which is what makes hijacking work through this middleware.
+func (s *statusRecorder) Unwrap() http.ResponseWriter { return s.ResponseWriter }
 
 func logRequests(logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {

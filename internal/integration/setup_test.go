@@ -5,6 +5,7 @@ package integration_test
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -66,7 +67,7 @@ func newEnv(t *testing.T) *testEnv {
 	conn, err := k8s.Connect(k8s.ClientConfig{KubeconfigPath: os.Getenv("KUBECONFIG")})
 	require.NoError(t, err)
 
-	pods := k8s.NewPods(conn.Clientset, testNamespace)
+	pods := k8s.NewPods(conn.Clientset, testNamespace).WithREST(conn.REST)
 	pods.SetPollInterval(200 * time.Millisecond)
 	pods.SetReadyTimeout(2 * time.Minute)
 	registry := forwarder.NewRegistry()
@@ -114,10 +115,17 @@ func newEnv(t *testing.T) *testEnv {
 // docker runs the docker CLI against the daemon with a per-call timeout.
 func (e *testEnv) docker(t *testing.T, timeout time.Duration, args ...string) (string, error) {
 	t.Helper()
+	return e.dockerStdin(t, timeout, nil, args...)
+}
+
+// dockerStdin is like docker but lets the caller pipe stdin.
+func (e *testEnv) dockerStdin(t *testing.T, timeout time.Duration, stdin io.Reader, args ...string) (string, error) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "docker", append([]string{"-H", "unix://" + e.SocketPath}, args...)...)
+	cmd.Stdin = stdin
 	out, err := cmd.CombinedOutput()
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return string(out), context.DeadlineExceeded

@@ -78,6 +78,68 @@ func TestCreateWorkingDir(t *testing.T) {
 	requireLogsContain(t, env, name, dir)
 }
 
+// docker run -d --name X alpine:3 echo a b c d → stdout has "a b c d".
+func TestCreateCmdMultipleArgs(t *testing.T) {
+	env := newEnv(t)
+	name := "it-margs-" + randSuffix()
+	cleanupPod(t, env.Pods, name)
+
+	out, err := env.docker(t, 60*time.Second,
+		"run", "-d", "--name", name, "alpine:3",
+		"echo", "alpha", "beta", "gamma",
+	)
+	require.NoError(t, err, "docker run output:\n%s", out)
+	requireLogsContain(t, env, name, "alpha beta gamma")
+}
+
+// docker run -d alpine sh -c 'echo "a b c" && date' — shell special chars pass through.
+func TestCreateCmdShellSpecialChars(t *testing.T) {
+	env := newEnv(t)
+	name := "it-shch-" + randSuffix()
+	cleanupPod(t, env.Pods, name)
+
+	out, err := env.docker(t, 60*time.Second,
+		"run", "-d", "--name", name, "alpine:3",
+		"sh", "-c", `echo "with spaces & ampersand" && echo done`,
+	)
+	require.NoError(t, err, "docker run output:\n%s", out)
+	requireLogsContain(t, env, name, "with spaces & ampersand")
+}
+
+// alpine has no default ENTRYPOINT; we run nginx:alpine, whose default
+// command writes a known startup line. Confirms the image's own CMD path
+// works when the user passes no override.
+func TestCreateImageDefaultEntrypoint(t *testing.T) {
+	env := newEnv(t)
+	name := "it-defaults-" + randSuffix()
+	cleanupPod(t, env.Pods, name)
+
+	out, err := env.docker(t, 90*time.Second, "run", "-d", "--name", name, "redis:7-alpine")
+	require.NoError(t, err, "docker run output:\n%s", out)
+	requireLogsContain(t, env, name, "Ready to accept connections")
+}
+
+func TestCreateCmdExitsNonZero(t *testing.T) {
+	env := newEnv(t)
+	name := "it-fail-" + randSuffix()
+	cleanupPod(t, env.Pods, name)
+
+	out, err := env.docker(t, 90*time.Second,
+		"run", "-d", "--name", name, "alpine:3",
+		"sh", "-c", "exit 7",
+	)
+	// With our /create that waits for Ready, a fast-exiting container will
+	// race the readiness check; either path is acceptable as long as docker
+	// run reports the failure.
+	if err == nil {
+		// Container created; verify wait reports the exit code.
+		waitOut, _ := env.docker(t, 15*time.Second, "wait", name)
+		assert.Contains(t, waitOut, "7", "docker wait should report exit 7; got:\n%s", waitOut)
+	} else {
+		assert.NotEmpty(t, out)
+	}
+}
+
 func TestCreateEntrypointMissingBinaryFails(t *testing.T) {
 	env := newEnv(t)
 	name := "it-bad-ep-" + randSuffix()

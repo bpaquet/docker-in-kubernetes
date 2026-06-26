@@ -100,7 +100,6 @@ func TestCreateContainerHappyPath(t *testing.T) {
 	resp, err := http.Post(ts.URL+"/v1.43/containers/create?name=myredis", "application/json", bytes.NewReader(body))
 	require.NoError(t, err)
 	defer resp.Body.Close()
-
 	assert.Equal(t, http.StatusCreated, resp.StatusCode)
 
 	var got dockerapi.CreateResponse
@@ -124,13 +123,14 @@ func TestCreateContainerRejectsEmptyImage(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
-func TestStartOnUnknownReturns404(t *testing.T) {
+// /start is idempotent on a missing container — see containers.go for why.
+func TestStartOnUnknownReturns204(t *testing.T) {
 	ts, _, _ := newTestHandler(t)
 
 	resp, err := http.Post(ts.URL+"/v1.43/containers/deadbeef/start", "", nil)
 	require.NoError(t, err)
 	defer resp.Body.Close()
-	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	assert.Equal(t, http.StatusNoContent, resp.StatusCode)
 }
 
 func TestStartIdempotent(t *testing.T) {
