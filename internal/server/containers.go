@@ -35,6 +35,13 @@ type containerHandlers struct {
 	cleanupPoll time.Duration
 }
 
+const (
+	attachStartTimeout = 60 * time.Second
+	waitStartTimeout   = 60 * time.Second
+	exitPollInterval   = 500 * time.Millisecond
+	startPollInterval  = 200 * time.Millisecond
+)
+
 func (c *containerHandlers) register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /containers/create", c.create)
 	mux.HandleFunc("POST /containers/{id}/start", c.start)
@@ -88,7 +95,7 @@ func (c *containerHandlers) attach(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if pending != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), attachStartTimeout)
 		defer cancel()
 		if err := pending.waitForStart(ctx); err != nil {
 			c.logger.Info("attach: pending wait failed", "container", pending.Spec.Name, "err", err)
@@ -97,17 +104,18 @@ func (c *containerHandlers) attach(w http.ResponseWriter, r *http.Request) {
 		pod = pending.Spec
 	}
 
-	// Wait until kubelet has actually started the container — SPDY attach and
-	// the logs API both fail if the pod is still in ContainerCreating.
-	startedCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	startedCtx, cancel := context.WithTimeout(context.Background(), attachStartTimeout)
 	defer cancel()
-	if err := c.waitForContainerStarted(startedCtx, pod.Name); err != nil {
+	state, err := c.waitForContainerStarted(startedCtx, pod.Name)
+	if err != nil {
 		c.logger.Warn("attach: container never started", "container", pod.Name, "err", err)
 		return
 	}
 
 	tty := len(pod.Spec.Containers) > 0 && pod.Spec.Containers[0].TTY
-	if wantStdin {
+	// SPDY attach to a terminated container fails opaquely; fall back to the
+	// log stream so the CLI sees the container's final output.
+	if wantStdin && !state.terminated {
 		c.attachInteractive(pod, conn, tty)
 		return
 	}
@@ -277,7 +285,7 @@ func (c *containerHandlers) wait(w http.ResponseWriter, r *http.Request) {
 	_ = http.NewResponseController(w).Flush()
 
 	if pending != nil {
-		ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+		ctx, cancel := context.WithTimeout(r.Context(), waitStartTimeout)
 		defer cancel()
 		if err := pending.waitForStart(ctx); err != nil {
 			return
@@ -300,7 +308,6 @@ func (c *containerHandlers) wait(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *containerHandlers) waitForExit(ctx context.Context, name string) (int64, error) {
-	const poll = 500 * time.Millisecond
 	for {
 		pod, err := c.pods.Get(ctx, name)
 		if errors.Is(err, k8s.ErrNotFound) {
@@ -315,7 +322,7 @@ func (c *containerHandlers) waitForExit(ctx context.Context, name string) (int64
 		select {
 		case <-ctx.Done():
 			return 0, ctx.Err()
-		case <-time.After(poll):
+		case <-time.After(exitPollInterval):
 		}
 	}
 }
@@ -486,24 +493,38 @@ func (c *containerHandlers) resolvePod(w http.ResponseWriter, r *http.Request) (
 	return pod, true
 }
 
-// waitForContainerStarted polls until kubelet has started (or terminated) the
-// container, so log streams can attach without the "ContainerCreating" error.
-func (c *containerHandlers) waitForContainerStarted(ctx context.Context, name string) error {
-	const poll = 200 * time.Millisecond
+// containerStartState distinguishes how the wait ended: running or already
+// terminated. Callers that need SPDY attach reject terminated; log readers
+// accept it.
+type containerStartState struct {
+	terminated bool
+}
+
+// waitForContainerStarted polls until kubelet reports the container running or
+// terminated. Aborts early with an error if kubelet is stuck in a fatal
+// Waiting state (image-pull failures etc.) so callers don't hang their full
+// timeout window.
+func (c *containerHandlers) waitForContainerStarted(ctx context.Context, name string) (containerStartState, error) {
 	for {
 		pod, err := c.pods.Get(ctx, name)
 		if err != nil {
-			return err
+			return containerStartState{}, err
 		}
 		for _, cs := range pod.Status.ContainerStatuses {
-			if cs.State.Running != nil || cs.State.Terminated != nil {
-				return nil
+			if cs.State.Running != nil {
+				return containerStartState{}, nil
 			}
+			if cs.State.Terminated != nil {
+				return containerStartState{terminated: true}, nil
+			}
+		}
+		if reason, msg := k8s.FatalContainerWaitingState(pod); reason != "" {
+			return containerStartState{}, fmt.Errorf("container %s failed to start: %s: %s", name, reason, msg)
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(poll):
+			return containerStartState{}, ctx.Err()
+		case <-time.After(startPollInterval):
 		}
 	}
 }
@@ -535,7 +556,7 @@ func (c *containerHandlers) ensureRunning(ctx context.Context, name string, mapp
 	}
 	c.registry.Set(id, h)
 	// Watcher must outlive the /start request — daemon-scoped, not request-scoped.
-	go c.watchPodForCleanup(name, id) //nolint:gosec
+	go c.watchPodForCleanup(name, id) //nolint:gosec // G118: intentional context.Background, not request-scoped
 	return nil
 }
 

@@ -295,6 +295,13 @@ func (p *Pods) PodIP(ctx context.Context, namespace, name string) (string, error
 	return pod.Status.PodIP, nil
 }
 
+// FatalContainerWaitingState returns the kubelet Waiting reason/message when
+// the container is stuck in a state that won't recover on its own (image pull
+// failure etc.). Empty strings mean "not stuck".
+func FatalContainerWaitingState(pod *corev1.Pod) (reason, message string) {
+	return fatalContainerWaitingState(pod)
+}
+
 func fatalContainerWaitingState(pod *corev1.Pod) (string, string) {
 	for _, cs := range pod.Status.ContainerStatuses {
 		if cs.State.Waiting == nil {

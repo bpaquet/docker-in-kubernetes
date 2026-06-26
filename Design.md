@@ -232,6 +232,7 @@ docker-in-kubernetes picks one of two forwarder backends at startup, based on wh
 ### Common
 
 - On `stop`/`kill`/`rm`, the forwarder is cancelled regardless of mode.
+- A per-container background watcher polls the pod (2s default) and closes the forwarder when the container terminates or the pod is gone — so naturally-exiting containers free their host port without needing an explicit `docker rm`.
 - Forwarders are **not** restored across daemon restarts in v1 (pods persist, forwards do not). Re-running `docker start` would re-establish. See [Later](#later-deferred-features) for the planned auto-rebuild.
 
 ## Lifecycle

@@ -61,13 +61,24 @@ func (p *pendingContainer) waitForStart(ctx context.Context) error {
 }
 
 type pendingStore struct {
-	mu sync.Mutex
-	m  map[string]*pendingContainer
+	mu  sync.Mutex
+	m   map[string]*pendingContainer
+	ttl time.Duration
+	now func() time.Time
 }
 
 func newPendingStore() *pendingStore {
-	return &pendingStore{m: make(map[string]*pendingContainer)}
+	return newPendingStoreWith(pendingTTL, time.Now)
 }
+
+func newPendingStoreWith(ttl time.Duration, now func() time.Time) *pendingStore {
+	s := &pendingStore{m: make(map[string]*pendingContainer), ttl: ttl, now: now}
+	return s
+}
+
+// pendingTTL caps how long a /create'd-but-never-/start'ed entry lingers.
+// CLIs that crash between /create and /start would otherwise leave phantoms.
+const pendingTTL = time.Hour
 
 func (s *pendingStore) put(p *pendingContainer) {
 	s.mu.Lock()
@@ -79,6 +90,7 @@ func (s *pendingStore) put(p *pendingContainer) {
 func (s *pendingStore) getByRef(ref string) *pendingContainer {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.reapLocked()
 	if p, ok := s.m[ref]; ok {
 		return p
 	}
@@ -90,6 +102,21 @@ func (s *pendingStore) getByRef(ref string) *pendingContainer {
 	return nil
 }
 
+// reapLocked drops entries older than ttl that nothing started. Marks them
+// failed so any /attach or /wait waiters unblock.
+func (s *pendingStore) reapLocked() {
+	if s.ttl <= 0 {
+		return
+	}
+	cutoff := s.now().Add(-s.ttl)
+	for id, p := range s.m {
+		if p.CreatedAt.Before(cutoff) {
+			p.markFailed(errPendingExpired)
+			delete(s.m, id)
+		}
+	}
+}
+
 func (s *pendingStore) remove(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -99,6 +126,7 @@ func (s *pendingStore) remove(id string) {
 func (s *pendingStore) list() []*pendingContainer {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.reapLocked()
 	out := make([]*pendingContainer, 0, len(s.m))
 	for _, p := range s.m {
 		out = append(out, p)
@@ -106,4 +134,7 @@ func (s *pendingStore) list() []*pendingContainer {
 	return out
 }
 
-var errPendingRemoved = errors.New("pending container removed before start")
+var (
+	errPendingRemoved = errors.New("pending container removed before start")
+	errPendingExpired = errors.New("pending container expired before start")
+)

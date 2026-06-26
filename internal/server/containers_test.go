@@ -267,6 +267,42 @@ func TestForwarderClosedOnContainerExit(t *testing.T) {
 		"forwarder should be closed once the container exits")
 }
 
+// Closing the forwarder from another path (eg. /kill, /wait?condition=removed)
+// must let the cleanup watcher exit on its next poll without panicking on the
+// already-closed handle. We assert by simulating it: open, externally close,
+// wait two polls, then update pod status — the watcher should not double-close.
+func TestForwarderWatcherExitsWhenClosedExternally(t *testing.T) {
+	ts, cs, _, registry := newTestHandler(t)
+
+	body, _ := json.Marshal(dockerapi.CreateRequest{
+		Image: "redis",
+		HostConfig: dockerapi.HostConfig{
+			PortBindings: map[string][]dockerapi.PortBinding{"6379/tcp": {{HostPort: "6379"}}},
+		},
+	})
+	resp, err := http.Post(ts.URL+"/v1.43/containers/create?name=myredis", "application/json", bytes.NewReader(body))
+	require.NoError(t, err)
+	resp.Body.Close()
+
+	id := podspec.ContainerID(testNamespace, "myredis")
+	startResp, err := http.Post(ts.URL+"/v1.43/containers/"+id+"/start", "", nil)
+	require.NoError(t, err)
+	startResp.Body.Close()
+
+	require.NoError(t, registry.Close(id))
+	assert.False(t, registry.Has(id))
+
+	time.Sleep(30 * time.Millisecond)
+	pod, err := cs.CoreV1().Pods(testNamespace).Get(t.Context(), "myredis", metav1.GetOptions{})
+	require.NoError(t, err)
+	pod.Status.Phase = corev1.PodSucceeded
+	_, err = cs.CoreV1().Pods(testNamespace).UpdateStatus(t.Context(), pod, metav1.UpdateOptions{})
+	require.NoError(t, err)
+
+	time.Sleep(30 * time.Millisecond)
+	assert.False(t, registry.Has(id), "registry should still be empty (watcher must not resurrect entries)")
+}
+
 func TestKillDeletesPodAndClosesForwarder(t *testing.T) {
 	ts, cs, _, _ := newTestHandler(t)
 
