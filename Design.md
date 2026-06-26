@@ -46,6 +46,10 @@ A v1 plus a few additions can run the common Testcontainers modules (Redis, Post
 
 **Smoke-tested**: `internal/integration/testcontainers_test.go` drives `testcontainers-go` against the daemon — spawns `redis:7-alpine`, resolves `Endpoint()` to a forwarded `127.0.0.1:port`, and exercises PING/SET/GET via the real Go redis client.
 
+**Known races (deferred)**:
+- *Port allocation*: when `HostConfig.PortBindings.HostPort` is `""` or `"0"`, we discover a free port via `net.Listen("tcp", "127.0.0.1:0")` + close, then hand the number to the forwarder. Between close and the forwarder's rebind, the OS can reassign the port to another process. Moby has the same race. Mitigations to consider: `SO_REUSEADDR` on the forwarder listener, or pass the `*net.TCPListener` directly to the forwarder so the port is never released.
+- *Concurrent allocation*: two `/containers/create` calls racing through `pickFreeTCPPort` can pick the same port. No serialization today.
+
 ### Devcontainers — not pursued
 
 Two fundamental blockers:

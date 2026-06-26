@@ -419,7 +419,7 @@ func (c *containerHandlers) list(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	labelFilters, err := parseLabelFilters(r.URL.Query().Get("filters"))
+	labelFilters, err := parseLabelFilters(r.URL.Query().Get("filters"), c.logger)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid filters: "+err.Error())
 		return
@@ -451,18 +451,22 @@ func (c *containerHandlers) list(w http.ResponseWriter, r *http.Request) {
 
 // parseLabelFilters extracts the `label` entries from Docker's filters
 // query. Docker emits two shapes: an array form {"label":["k=v"]} and a
-// legacy map-set form {"label":{"k=v":true}}. We only need `label` to
-// satisfy testcontainers' reaper-lookup; other filter keys are ignored.
-func parseLabelFilters(raw string) ([]labelFilter, error) {
+// legacy map-set form {"label":{"k=v":true}}. We only honor `label` —
+// callers that pass `status`/`name`/`ancestor`/etc. get a misleadingly
+// unfiltered response. Logging dropped keys gives an operator a chance
+// to notice.
+func parseLabelFilters(raw string, logger *slog.Logger) ([]labelFilter, error) {
 	if raw == "" {
 		return nil, nil
 	}
 	var arr map[string][]string
 	if err := json.Unmarshal([]byte(raw), &arr); err == nil {
+		logDroppedFilterKeys(logger, arr)
 		return labelFiltersFromValues(arr["label"]), nil
 	}
 	var mapSet map[string]map[string]bool
 	if err := json.Unmarshal([]byte(raw), &mapSet); err == nil {
+		logDroppedFilterKeys(logger, mapSet)
 		values := make([]string, 0, len(mapSet["label"]))
 		for v := range mapSet["label"] {
 			values = append(values, v)
@@ -470,6 +474,18 @@ func parseLabelFilters(raw string) ([]labelFilter, error) {
 		return labelFiltersFromValues(values), nil
 	}
 	return nil, errors.New("filters must be JSON object")
+}
+
+func logDroppedFilterKeys[V any](logger *slog.Logger, parsed map[string]V) {
+	if logger == nil {
+		return
+	}
+	for k := range parsed {
+		if k == "label" {
+			continue
+		}
+		logger.Debug("containers.list: dropping unsupported filter key", "key", k)
+	}
 }
 
 type labelFilter struct {
