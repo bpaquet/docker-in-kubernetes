@@ -5,6 +5,7 @@ package integration_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -21,6 +22,7 @@ import (
 	"github.com/bpaquet/docker-in-kubernetes/internal/images"
 	"github.com/bpaquet/docker-in-kubernetes/internal/k8s"
 	"github.com/bpaquet/docker-in-kubernetes/internal/networks"
+	"github.com/bpaquet/docker-in-kubernetes/internal/podspec"
 	"github.com/bpaquet/docker-in-kubernetes/internal/server"
 	"github.com/bpaquet/docker-in-kubernetes/internal/sockutil"
 )
@@ -40,6 +42,7 @@ func wipeStalePods() {
 	}
 	conn, err := k8s.Connect(k8s.ClientConfig{KubeconfigPath: kubeconfig})
 	if err != nil {
+		fmt.Fprintln(os.Stderr, "wipeStalePods: kube connect failed:", err)
 		return
 	}
 	pods := k8s.NewPods(conn.Clientset, testNamespace)
@@ -47,10 +50,13 @@ func wipeStalePods() {
 	defer cancel()
 	list, err := pods.List(ctx)
 	if err != nil {
+		fmt.Fprintln(os.Stderr, "wipeStalePods: list failed:", err)
 		return
 	}
 	for i := range list {
-		_ = pods.Delete(ctx, list[i].Name, 0)
+		if err := pods.Delete(ctx, list[i].Name, 0); err != nil {
+			fmt.Fprintf(os.Stderr, "wipeStalePods: delete %s failed: %v\n", list[i].Name, err)
+		}
 	}
 }
 
@@ -152,11 +158,5 @@ func cleanupPod(t *testing.T, pods *k8s.Pods, name string) {
 }
 
 func randSuffix() string {
-	const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
-	now := time.Now().UnixNano()
-	var b [6]byte
-	for i := range b {
-		b[i] = alphabet[uint(now>>(uint(i)*5))%uint(len(alphabet))]
-	}
-	return string(b[:])
+	return podspec.RandomSuffix(6)
 }

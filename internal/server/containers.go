@@ -414,7 +414,7 @@ func (c *containerHandlers) list(w http.ResponseWriter, r *http.Request) {
 	out := make([]dockerapi.ContainerSummary, 0, len(pods))
 	for i := range pods {
 		s := buildSummary(&pods[i])
-		if !all && s.State != "running" {
+		if !all && s.State != StateRunning {
 			continue
 		}
 		out = append(out, s)
@@ -646,13 +646,15 @@ func parseGrace(s string, def time.Duration) time.Duration {
 
 // writeRawStreamResponse sends the hijacked-stream response headers. When the
 // client requested `Connection: Upgrade, tcp` (docker CLI default for
-// attach/exec start), we reply 101 Upgraded; otherwise 200 OK.
+// attach/exec start), we reply 101 Upgraded with `Upgrade: tcp`; otherwise
+// 200 OK. The value is hardcoded — docker only defines `tcp` here and echoing
+// the client header verbatim is the kind of construction that ages badly.
 func writeRawStreamResponse(r *http.Request, brw *bufio.ReadWriter) error {
 	status := "HTTP/1.1 200 OK\r\n"
 	upgrade := ""
 	if strings.Contains(strings.ToLower(r.Header.Get("Connection")), "upgrade") {
 		status = "HTTP/1.1 101 UPGRADED\r\n"
-		upgrade = "Connection: Upgrade\r\nUpgrade: " + r.Header.Get("Upgrade") + "\r\n"
+		upgrade = "Connection: Upgrade\r\nUpgrade: tcp\r\n"
 	}
 	_, err := brw.WriteString(status +
 		"Content-Type: application/vnd.docker.raw-stream\r\n" +
