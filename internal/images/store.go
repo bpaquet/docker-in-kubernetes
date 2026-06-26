@@ -39,13 +39,31 @@ func New() *Store {
 	return &Store{m: make(map[string]Record)}
 }
 
-// Record upserts r keyed by Ref and returns the stored copy.
+// Record upserts r keyed by canonical(ref) and returns the stored copy.
 func (s *Store) Record(ref, tag string, now time.Time) Record {
+	ref = canonicalRef(ref)
 	r := Record{Ref: ref, Tag: tag, PulledAt: now.UTC()}
 	s.mu.Lock()
 	s.m[ref] = r
 	s.mu.Unlock()
 	return r
+}
+
+// canonicalRef strips Docker Hub's implicit prefixes so that
+// `docker.io/library/redis`, `library/redis`, and `redis` all hash to `redis`.
+// Why: docker compose normalizes refs on pull (`fromImage=docker.io/library/redis`)
+// but inspects with the short form (`GET /images/redis/json`).
+func canonicalRef(ref string) string {
+	if rest, ok := strings.CutPrefix(ref, "docker.io/library/"); ok {
+		return rest
+	}
+	if rest, ok := strings.CutPrefix(ref, "docker.io/"); ok {
+		return rest
+	}
+	if rest, ok := strings.CutPrefix(ref, "library/"); ok {
+		return rest
+	}
+	return ref
 }
 
 // List returns all records, newest first.
@@ -62,6 +80,7 @@ func (s *Store) List() []Record {
 
 // Has reports whether ref has been pulled.
 func (s *Store) Has(ref string) bool {
+	ref = canonicalRef(ref)
 	s.mu.RLock()
 	_, ok := s.m[ref]
 	s.mu.RUnlock()
@@ -78,6 +97,7 @@ func (s *Store) Find(name string) (Record, bool) {
 	if name == "" {
 		return Record{}, false
 	}
+	name = canonicalRef(name)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if r, ok := s.m[name]; ok {
@@ -96,6 +116,7 @@ func (s *Store) Remove(name string) (Record, bool) {
 	if name == "" {
 		return Record{}, false
 	}
+	name = canonicalRef(name)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if r, ok := s.m[name]; ok {
