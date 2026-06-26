@@ -20,6 +20,7 @@ import (
 	"github.com/bpaquet/docker-in-kubernetes/internal/forwarder"
 	"github.com/bpaquet/docker-in-kubernetes/internal/images"
 	"github.com/bpaquet/docker-in-kubernetes/internal/k8s"
+	"github.com/bpaquet/docker-in-kubernetes/internal/networks"
 	"github.com/bpaquet/docker-in-kubernetes/internal/server"
 	"github.com/bpaquet/docker-in-kubernetes/internal/sockutil"
 )
@@ -89,6 +90,7 @@ func newEnv(t *testing.T) *testEnv {
 			Forwarder:     fw,
 			Forwards:      registry,
 			Images:        images.New(),
+			Networks:      networks.New(),
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
