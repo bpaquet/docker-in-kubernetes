@@ -16,6 +16,7 @@ import (
 	"github.com/bpaquet/docker-in-kubernetes/internal/forwarder"
 	"github.com/bpaquet/docker-in-kubernetes/internal/images"
 	"github.com/bpaquet/docker-in-kubernetes/internal/k8s"
+	"github.com/bpaquet/docker-in-kubernetes/internal/networks"
 )
 
 // Docker Engine API version we advertise.
@@ -51,6 +52,7 @@ type Config struct {
 	Forwarder     PortForwarder
 	Forwards      *forwarder.Registry
 	Images        *images.Store
+	Networks      *networks.Store
 	// CleanupPollInterval overrides the watcher's pod-poll interval. Defaults to 2s.
 	CleanupPollInterval time.Duration
 }
@@ -89,6 +91,11 @@ func New(cfg Config) http.Handler {
 	if cfg.Images != nil {
 		ih := &imageHandlers{store: cfg.Images, now: time.Now}
 		ih.register(mux)
+	}
+
+	if cfg.Networks != nil {
+		nh := &networkHandlers{store: cfg.Networks, now: time.Now}
+		nh.register(mux)
 	}
 
 	return chain(mux, stripVersionPrefix, logRequests(logger))

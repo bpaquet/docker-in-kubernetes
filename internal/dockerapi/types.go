@@ -213,6 +213,56 @@ type ImageDeleteItem struct {
 	Deleted  string `json:"Deleted,omitempty"`
 }
 
+// Network is returned by GET /networks/{name} and one element of GET /networks.
+type Network struct {
+	Name       string                      `json:"Name"`
+	ID         string                      `json:"Id"`
+	Created    string                      `json:"Created"`
+	Scope      string                      `json:"Scope"`
+	Driver     string                      `json:"Driver"`
+	EnableIPv6 bool                        `json:"EnableIPv6"`
+	Internal   bool                        `json:"Internal"`
+	Attachable bool                        `json:"Attachable"`
+	Ingress    bool                        `json:"Ingress"`
+	IPAM       NetworkIPAM                 `json:"IPAM"`
+	Containers map[string]NetworkContainer `json:"Containers"`
+	Options    map[string]string           `json:"Options"`
+	Labels     map[string]string           `json:"Labels"`
+}
+
+// NetworkIPAM mirrors Docker's IPAM substructure.
+type NetworkIPAM struct {
+	Driver  string              `json:"Driver"`
+	Options map[string]string   `json:"Options"`
+	Config  []map[string]string `json:"Config"`
+}
+
+// NetworkContainer is one entry of Network.Containers.
+type NetworkContainer struct {
+	Name        string `json:"Name"`
+	EndpointID  string `json:"EndpointID"`
+	MacAddress  string `json:"MacAddress"`
+	IPv4Address string `json:"IPv4Address"`
+	IPv6Address string `json:"IPv6Address"`
+}
+
+// NetworkCreateRequest is the body of POST /networks/create.
+type NetworkCreateRequest struct {
+	Name       string            `json:"Name"`
+	Driver     string            `json:"Driver,omitempty"`
+	Internal   bool              `json:"Internal,omitempty"`
+	Attachable bool              `json:"Attachable,omitempty"`
+	EnableIPv6 bool              `json:"EnableIPv6,omitempty"`
+	Labels     map[string]string `json:"Labels,omitempty"`
+	Options    map[string]string `json:"Options,omitempty"`
+}
+
+// NetworkCreateResponse is returned by POST /networks/create.
+type NetworkCreateResponse struct {
+	ID      string `json:"Id"`
+	Warning string `json:"Warning"`
+}
+
 // InfoResponse is the minimal /info subset the docker CLI accepts.
 type InfoResponse struct {
 	ID                string `json:"ID"`

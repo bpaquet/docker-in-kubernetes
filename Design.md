@@ -135,11 +135,25 @@ The cluster handles the real pull on pod creation. The daemon keeps an in-memory
 
 **Image ID** is derived deterministically: `id = "sha256:" + hex(sha256(<ref>))`. Same scheme as container IDs — no extra state, regenerable from the ref alone.
 
+## Network primitives
+
+The daemon's k8s namespace IS the network — every pod in it can reach every other pod by name via cluster DNS. We don't model `docker network` shapes, we just answer them so `docker compose up` (which probes `GET /networks/<project>_default` before creating containers) doesn't trip. An in-memory `networks.Store` keyed by name backs the responses; like images, state is lost on restart.
+
+| Docker CLI                          | Engine endpoint                              | Behaviour |
+| ----------------------------------- | -------------------------------------------- | --------- |
+| `docker network create <n>`         | `POST /networks/create`                      | Records the network. Returns `{Id, Warning}`. |
+| `docker network ls`                 | `GET /networks`                              | Lists recorded networks. |
+| `docker network inspect <n>`        | `GET /networks/{name}`                       | 404 if missing — drives compose's create-on-missing flow. |
+| `docker network rm <n>`             | `DELETE /networks/{name}`                    | 204 / 404 if missing. |
+| `docker network connect/disconnect` | `POST /networks/{name}/(dis)connect`         | No-op 200 — pods already see each other. |
+
+**Network ID** is `hex(sha256(name))` (no `sha256:` prefix to match Docker's network ID format).
+
 ## Non-goals (v1)
 
 - Image build/push management (`docker build`, `docker push`). `docker pull` / `images` / `image rm` / `image inspect` are stubbed against an in-memory store — see [Image primitives](#image-primitives).
 - Volume mounts (`-v`) and bind mounts.
-- Networks (`docker network`).
+- Real `docker network` semantics — endpoints are stubbed (see [Network primitives](#network-primitives)) so compose's pre-create probe passes; the namespace itself provides connectivity.
 - Compose, swarm, plugins.
 - Restart policies beyond `Never`.
 - Multi-container pods.
@@ -180,6 +194,7 @@ Real Docker Engine HTTP API, enough that the unmodified `docker` CLI works for:
 | `docker exec`                      | `POST /containers/{id}/exec`, `POST /exec/{id}/start`, `GET /exec/{id}/json`|
 | `docker version`, `docker info`    | `GET /version`, `GET /info` (static-ish responses)                          |
 | `docker pull`, `docker images`, `docker image rm`, `docker image inspect` | `POST /images/create`, `GET /images/json`, `DELETE /images/{name}`, `GET /images/{name}/json` — see [Image primitives](#image-primitives) |
+| `docker network create/ls/inspect/rm/connect/disconnect` | `POST /networks/create`, `GET /networks`, `GET /networks/{name}`, `DELETE /networks/{name}`, `POST /networks/{name}/(dis)connect` — see [Network primitives](#network-primitives) |
 
 API version: advertise `1.43` (Docker Engine 24.0) via `/_ping` `Api-Version` header and `/version`. Accept any `/v1.x` prefix and route to the same handlers. This covers the modern `docker` CLI's negotiation floor and Testcontainers' `>= 1.24` minimum without obliging us to implement post-1.43 endpoints.
 
