@@ -32,9 +32,12 @@ func containerCounts(r *http.Request, pods PodStore, logger *slog.Logger) (total
 	if pods == nil {
 		return 0, 0
 	}
+	if logger == nil {
+		logger = slog.Default()
+	}
 	list, err := pods.List(r.Context())
 	if err != nil {
-		logger.Warn("info: list pods failed; reporting zero counts", "err", err)
+		logger.Warn("info: list pods failed", "err", err)
 		return 0, 0
 	}
 	for i := range list {

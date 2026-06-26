@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -408,6 +410,39 @@ func TestInfo(t *testing.T) {
 	assert.Equal(t, 2, info.Containers)
 	assert.Equal(t, 1, info.ContainersRunning)
 	assert.Positive(t, info.NCPU)
+}
+
+func TestInfoLogsAndReturnsZerosOnListError(t *testing.T) {
+	cs := fake.NewClientset()
+	cs.PrependReactor("list", "pods", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, errors.New("boom")
+	})
+	store := k8s.NewPods(cs, testNamespace)
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	h := server.New(server.Config{
+		DaemonVersion: "0.0.0-test",
+		Logger:        logger,
+		Pods:          store,
+		Forwarder:     &fakeForwarder{},
+		Forwards:      forwarder.NewRegistry(),
+	})
+	ts := httptest.NewServer(h)
+	t.Cleanup(ts.Close)
+
+	resp, err := http.Get(ts.URL + "/info")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var info dockerapi.InfoResponse
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&info))
+	assert.Equal(t, 0, info.Containers)
+	assert.Equal(t, 0, info.ContainersRunning)
+	assert.Contains(t, logBuf.String(), "info: list pods failed")
+	assert.Contains(t, logBuf.String(), "boom")
 }
 
 func TestLogsStreamsMultiplexed(t *testing.T) {
