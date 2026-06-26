@@ -16,7 +16,8 @@ import (
 	"github.com/bpaquet/docker-in-kubernetes/internal/k8s"
 )
 
-// execInstance is the daemon-side bookkeeping for one /containers/{id}/exec call.
+// execInstance is one /exec session: config from /containers/{id}/exec, state
+// updated by /exec/{id}/start, read back by /exec/{id}/json.
 type execInstance struct {
 	ID          string
 	ContainerID string
@@ -30,7 +31,6 @@ type execInstance struct {
 	exitCode int
 }
 
-// execStore is an in-memory map of exec instances keyed by exec ID.
 type execStore struct {
 	mu sync.Mutex
 	m  map[string]*execInstance
@@ -50,14 +50,6 @@ func (s *execStore) get(id string) *execInstance {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.m[id]
-}
-
-func newExecID() string {
-	var b [32]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		panic(err)
-	}
-	return hex.EncodeToString(b[:])
 }
 
 func (c *containerHandlers) registerExec(mux *http.ServeMux) {
@@ -80,8 +72,13 @@ func (c *containerHandlers) execCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Cmd is required")
 		return
 	}
+	var idBytes [32]byte
+	if _, err := rand.Read(idBytes[:]); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	e := &execInstance{
-		ID:          newExecID(),
+		ID:          hex.EncodeToString(idBytes[:]),
 		ContainerID: r.PathValue("id"),
 		PodName:     pod.Name,
 		Cmd:         req.Cmd,
@@ -119,13 +116,9 @@ func (c *containerHandlers) execStart(w http.ResponseWriter, r *http.Request) {
 	}
 
 	stdout, stderr := multiplexedStdoutStderr(conn, e.Tty)
-	opts := k8s.StreamOptions{
-		Stdout: stdout,
-		Stderr: stderr,
-		TTY:    e.Tty,
-	}
-	if e.Tty {
-		opts.Stderr = nil
+	opts := k8s.StreamOptions{Stdout: stdout, TTY: e.Tty}
+	if !e.Tty {
+		opts.Stderr = stderr
 	}
 	if e.AttachStdin {
 		opts.Stdin = brw
@@ -149,9 +142,7 @@ func (c *containerHandlers) execStart(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// exitCodeFromExecErr extracts the exit status from a remotecommand error.
-// A non-zero exit becomes a *utilexec.CodeExitError; anything else collapses
-// to 1 (generic failure).
+// exitCodeFromExecErr unwraps remotecommand's CodeExitError; other errors → 1.
 func exitCodeFromExecErr(err error) int {
 	if err == nil {
 		return 0
@@ -173,7 +164,13 @@ func (c *containerHandlers) execInspect(w http.ResponseWriter, r *http.Request) 
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	resp := dockerapi.ExecInspect{
+	var entrypoint string
+	var args []string
+	if len(e.Cmd) > 0 {
+		entrypoint = e.Cmd[0]
+		args = e.Cmd[1:]
+	}
+	writeJSON(w, http.StatusOK, dockerapi.ExecInspect{
 		ID:          e.ID,
 		Running:     e.running,
 		ExitCode:    e.exitCode,
@@ -183,23 +180,8 @@ func (c *containerHandlers) execInspect(w http.ResponseWriter, r *http.Request) 
 		ContainerID: e.ContainerID,
 		ProcessConfig: dockerapi.ProcessConfig{
 			Tty:        e.Tty,
-			EntryPoint: firstOrEmpty(e.Cmd),
-			Arguments:  restOrNil(e.Cmd),
+			EntryPoint: entrypoint,
+			Arguments:  args,
 		},
-	}
-	writeJSON(w, http.StatusOK, resp)
-}
-
-func firstOrEmpty(s []string) string {
-	if len(s) == 0 {
-		return ""
-	}
-	return s[0]
-}
-
-func restOrNil(s []string) []string {
-	if len(s) <= 1 {
-		return nil
-	}
-	return s[1:]
+	})
 }

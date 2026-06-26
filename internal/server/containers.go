@@ -79,24 +79,20 @@ func (c *containerHandlers) attach(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if wantStdin {
-		c.attachInteractive(pod, conn, brw, tty)
+		c.attachInteractive(pod, conn, tty)
 		return
 	}
 	c.attachLogs(pod, conn, tty)
 }
 
-func (c *containerHandlers) attachInteractive(pod *corev1.Pod, conn net.Conn, brw *bufio.ReadWriter, tty bool) {
+// attachInteractive uses the raw conn for stdin (no /attach body, so bufio's
+// pre-buffer is empty anyway).
+func (c *containerHandlers) attachInteractive(pod *corev1.Pod, conn net.Conn, tty bool) {
 	stdout, stderr := multiplexedStdoutStderr(conn, tty)
-	// Prefer raw conn for stdin: bufio.Reader can buffer bytes the apiserver
-	// SPDY layer can't see. brw.Reader is only needed when the server already
-	// pre-buffered post-header bytes (e.g. a request body before upgrade) —
-	// /attach has no body, so conn is safe.
 	opts := k8s.StreamOptions{Stdin: conn, Stdout: stdout, TTY: tty}
 	if !tty {
 		opts.Stderr = stderr
 	}
-	_ = brw // keep param so unused-import / unused-write lints stay quiet
-	c.logger.Info("attach: SPDY attach starting", "container", pod.Name, "tty", tty)
 	if err := c.pods.Attach(context.Background(), pod.Name, opts); err != nil {
 		c.logger.Info("attach ended", "container", pod.Name, "err", err)
 	}
@@ -192,9 +188,11 @@ func (c *containerHandlers) start(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// wait short-circuits condition=next-exit while the container is still
-// running (see Design.md "Wait endpoint quirk"). condition=removed blocks
-// until exit and then deletes the pod — the basis of `docker run --rm`.
+// wait: condition=next-exit short-circuits when the container is still
+// running (otherwise `docker run -d` would hang waiting on the body — see
+// Design.md). If the container has already exited by the time /wait lands we
+// return the real code regardless. condition=removed blocks until exit and
+// deletes the pod — basis of `docker run --rm`.
 func (c *containerHandlers) wait(w http.ResponseWriter, r *http.Request) {
 	pod, ok := c.resolvePod(w, r)
 	if !ok {
@@ -202,11 +200,10 @@ func (c *containerHandlers) wait(w http.ResponseWriter, r *http.Request) {
 	}
 	condition := r.URL.Query().Get("condition")
 	if condition == "next-exit" {
-		if exit, done := exitCodeFromPod(pod); done {
-			writeJSON(w, http.StatusOK, dockerapi.WaitResponse{StatusCode: exit})
-			return
-		}
-		writeJSON(w, http.StatusOK, dockerapi.WaitResponse{StatusCode: 0})
+		// Short poll for terminated state: fast-exiting containers may not
+		// have ContainerStatus updated yet on the first read.
+		exit, _ := c.pollExitCode(r.Context(), pod.Name, 500*time.Millisecond)
+		writeJSON(w, http.StatusOK, dockerapi.WaitResponse{StatusCode: exit})
 		return
 	}
 	exit, err := c.waitForExit(r.Context(), pod.Name)
@@ -219,6 +216,30 @@ func (c *containerHandlers) wait(w http.ResponseWriter, r *http.Request) {
 		_ = c.pods.Delete(r.Context(), pod.Name, 0)
 	}
 	writeJSON(w, http.StatusOK, dockerapi.WaitResponse{StatusCode: exit})
+}
+
+// pollExitCode polls the pod for a terminated container state up to the given
+// budget. Returns (0, false) if the container is still running at the
+// deadline, so the caller can short-circuit /wait.
+func (c *containerHandlers) pollExitCode(ctx context.Context, name string, budget time.Duration) (int64, bool) {
+	deadline := time.Now().Add(budget)
+	for {
+		pod, err := c.pods.Get(ctx, name)
+		if err != nil {
+			return 0, false
+		}
+		if exit, done := exitCodeFromPod(pod); done {
+			return exit, true
+		}
+		if time.Now().After(deadline) {
+			return 0, false
+		}
+		select {
+		case <-ctx.Done():
+			return 0, false
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
 }
 
 func (c *containerHandlers) waitForExit(ctx context.Context, name string) (int64, error) {
@@ -242,16 +263,19 @@ func (c *containerHandlers) waitForExit(ctx context.Context, name string) (int64
 	}
 }
 
+// exitCodeFromPod prefers ContainerStatuses[].State.Terminated over Phase —
+// kubelet updates the container state before pod.Phase transitions, so a
+// fast-exiting container can have ExitCode=7 while Phase is still Running.
 func exitCodeFromPod(pod *corev1.Pod) (int64, bool) {
+	for _, cs := range pod.Status.ContainerStatuses {
+		if cs.State.Terminated != nil {
+			return int64(cs.State.Terminated.ExitCode), true
+		}
+	}
 	switch pod.Status.Phase {
 	case corev1.PodSucceeded:
 		return 0, true
 	case corev1.PodFailed:
-		for _, cs := range pod.Status.ContainerStatuses {
-			if cs.State.Terminated != nil {
-				return int64(cs.State.Terminated.ExitCode), true
-			}
-		}
 		return 1, true
 	}
 	return 0, false
