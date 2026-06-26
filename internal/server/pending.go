@@ -86,11 +86,39 @@ func (s *pendingStore) put(p *pendingContainer) {
 	s.m[p.ID] = p
 }
 
+// reserve atomically claims a name in the pending store. Returns true if p
+// was inserted; false if a pending entry already exists for the same ID or
+// (when non-empty) the same dockerName. Callers must use this — not the
+// getByRef + put pair — to close the TOCTOU window between two concurrent
+// /create calls racing on the same --name.
+//
+// Callers that also need to check for live-pod conflicts should remove() the
+// reservation on the conflict path; the reservation is briefly visible to
+// other /create calls but never to /containers/json (pending listings only
+// appear with ?all=1, and the conflict-path window is sub-millisecond).
+func (s *pendingStore) reserve(p *pendingContainer, dockerName string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.reapLocked()
+	if dockerName != "" && s.findLocked(dockerName) != nil {
+		return false
+	}
+	if _, exists := s.m[p.ID]; exists {
+		return false
+	}
+	s.m[p.ID] = p
+	return true
+}
+
 // getByRef resolves a CLI reference (full ID, short ID, pod name, --name).
 func (s *pendingStore) getByRef(ref string) *pendingContainer {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.reapLocked()
+	return s.findLocked(ref)
+}
+
+func (s *pendingStore) findLocked(ref string) *pendingContainer {
 	if p, ok := s.m[ref]; ok {
 		return p
 	}
