@@ -189,11 +189,11 @@ func (c *containerHandlers) start(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// wait: condition=next-exit short-circuits when the container is still
-// running (otherwise `docker run -d` would hang waiting on the body — see
-// Design.md). If the container has already exited by the time /wait lands we
-// return the real code regardless. condition=removed blocks until exit and
-// deletes the pod — basis of `docker run --rm`.
+// wait: condition=next-exit returns quickly. condition=removed (and the
+// default not-running) flushes headers immediately so the CLI's wait
+// subscription is "established" — the CLI blocks on those headers and can
+// only proceed with /start once they land. Body is written after the
+// container actually exits.
 func (c *containerHandlers) wait(w http.ResponseWriter, r *http.Request) {
 	pod, ok := c.resolvePod(w, r)
 	if !ok {
@@ -207,16 +207,22 @@ func (c *containerHandlers) wait(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, dockerapi.WaitResponse{StatusCode: exit})
 		return
 	}
+
+	setDockerHeaders(w)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = http.NewResponseController(w).Flush()
+
 	exit, err := c.waitForExit(r.Context(), pod.Name)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		// Headers already sent; closing the body is the best signal we have.
 		return
 	}
 	if condition == "removed" {
 		_ = c.registry.Close(podspec.ContainerID(pod.Namespace, pod.Name))
 		_ = c.pods.Delete(r.Context(), pod.Name, 0)
 	}
-	writeJSON(w, http.StatusOK, dockerapi.WaitResponse{StatusCode: exit})
+	_ = json.NewEncoder(w).Encode(dockerapi.WaitResponse{StatusCode: exit})
 }
 
 // pollExitCode polls the pod for a terminated container state up to the given
