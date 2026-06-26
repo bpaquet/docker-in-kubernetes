@@ -419,6 +419,11 @@ func (c *containerHandlers) list(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	labelFilters, err := parseLabelFilters(r.URL.Query().Get("filters"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid filters: "+err.Error())
+		return
+	}
 	all := boolQuery(r, "all")
 	out := make([]dockerapi.ContainerSummary, 0, len(pods))
 	for i := range pods {
@@ -426,15 +431,73 @@ func (c *containerHandlers) list(w http.ResponseWriter, r *http.Request) {
 		if !all && s.State != StateRunning {
 			continue
 		}
+		if !matchesLabelFilters(s.Labels, labelFilters) {
+			continue
+		}
 		out = append(out, s)
 	}
 	if all {
 		for _, p := range c.pending.list() {
-			out = append(out, summaryForPending(p))
+			s := summaryForPending(p)
+			if !matchesLabelFilters(s.Labels, labelFilters) {
+				continue
+			}
+			out = append(out, s)
 		}
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Created > out[j].Created })
 	writeJSON(w, http.StatusOK, out)
+}
+
+// parseLabelFilters extracts the `label` entries from Docker's filters
+// query. Docker emits two shapes: an array form {"label":["k=v"]} and a
+// legacy map-set form {"label":{"k=v":true}}. We only need `label` to
+// satisfy testcontainers' reaper-lookup; other filter keys are ignored.
+func parseLabelFilters(raw string) ([]labelFilter, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	var arr map[string][]string
+	if err := json.Unmarshal([]byte(raw), &arr); err == nil {
+		return labelFiltersFromValues(arr["label"]), nil
+	}
+	var mapSet map[string]map[string]bool
+	if err := json.Unmarshal([]byte(raw), &mapSet); err == nil {
+		values := make([]string, 0, len(mapSet["label"]))
+		for v := range mapSet["label"] {
+			values = append(values, v)
+		}
+		return labelFiltersFromValues(values), nil
+	}
+	return nil, errors.New("filters must be JSON object")
+}
+
+type labelFilter struct {
+	key      string
+	value    string
+	hasValue bool
+}
+
+func labelFiltersFromValues(values []string) []labelFilter {
+	out := make([]labelFilter, 0, len(values))
+	for _, v := range values {
+		k, val, ok := strings.Cut(v, "=")
+		out = append(out, labelFilter{key: k, value: val, hasValue: ok})
+	}
+	return out
+}
+
+func matchesLabelFilters(labels map[string]string, filters []labelFilter) bool {
+	for _, f := range filters {
+		got, ok := labels[f.key]
+		if !ok {
+			return false
+		}
+		if f.hasValue && got != f.value {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *containerHandlers) inspect(w http.ResponseWriter, r *http.Request) {
