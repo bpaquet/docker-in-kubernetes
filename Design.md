@@ -42,7 +42,15 @@ A v1 plus a few additions can run the common Testcontainers modules (Redis, Post
 - Byte-accurate `inspect.NetworkSettings.Ports`.
 - Stubbed `/images/create` (rely on cluster pull-on-create).
 
-**Known blocker**: the **Ryuk reaper** container connects *back* to the Docker socket from inside the cluster — impossible when the socket lives on the user's laptop. Mitigation: require `TESTCONTAINERS_RYUK_DISABLED=true`. Aligns with our "no cleanup on shim exit" stance.
+**Known blocker**: the **Ryuk reaper** container connects *back* to the Docker socket from inside the cluster — impossible when the socket lives on the user's laptop. Today's mitigation: require `TESTCONTAINERS_RYUK_DISABLED=true`. Aligns with our "no cleanup on shim exit" stance.
+
+#### Paths to make Ryuk work (none implemented yet)
+
+| | Approach | How | Tradeoff |
+|---|---|---|---|
+| A | TCP-exposed Docker API | Have dik listen on `0.0.0.0:<port>` in addition to its UNIX socket; set `DOCKER_HOST=tcp://<gateway>:<port>` in the ryuk pod (`host.docker.internal` on kind, the docker network gateway IP elsewhere). | Trivial for kind; breaks for any cluster the laptop isn't routable from. Opens an unauthenticated TCP API on the laptop — fine for dev, not shared envs. |
+| B | Reverse-tunnel pod | dik spawns a hidden "dik-proxy" pod + Service in the cluster. The proxy holds a long-lived SPDY/gRPC stream back to dik on the laptop and forwards Docker API calls over it. Ryuk's `DOCKER_HOST=tcp://dik-proxy.<ns>.svc:2375`. | Works for any cluster `kubectl` can reach. Adds a proxy image + tunnel lifecycle — Telepresence-lite. High cost for the value. |
+| C | **In-daemon ryuk simulator** *(preferred)* | Intercept `POST /containers/create` when `Image == testcontainers/ryuk:*`. Don't create a pod — allocate a host port and spawn a goroutine that speaks ryuk's wire protocol on that port: read `label=k=v\n` lines, ACK each, track filters per connection. On client disconnect → wait `ConnectionTimeout` (default 10s) → delete every managed pod matching any registered filter. Make the synthetic container show up in `/containers/json`+`/inspect` (state `running`, host port populated) so testcontainers' wait-for-ready succeeds. | ~150 LoC. Replicates a small, stable public protocol. Works against any cluster. Removes the `TESTCONTAINERS_RYUK_DISABLED` foot-gun and gives real cleanup on test-process crash — a UX win, not just compatibility. |
 
 **Smoke-tested**: `internal/integration/testcontainers_test.go` drives `testcontainers-go` against the daemon — spawns `redis:7-alpine`, resolves `Endpoint()` to a forwarded `127.0.0.1:port`, and exercises PING/SET/GET via the real Go redis client.
 
