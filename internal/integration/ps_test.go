@@ -15,9 +15,6 @@ import (
 	"github.com/bpaquet/docker-in-kubernetes/internal/podspec"
 )
 
-// TestDockerPsEmpty confirms the daemon answers /containers/json with an
-// empty list when no managed pods exist (and the docker CLI shows only the
-// header row).
 func TestDockerPsEmpty(t *testing.T) {
 	env := newEnv(t)
 	out, err := env.docker(t, 15*time.Second, "ps")
@@ -27,9 +24,7 @@ func TestDockerPsEmpty(t *testing.T) {
 	assert.Contains(t, lines[0], "CONTAINER ID")
 }
 
-// TestDockerPsListsManagedPod creates a managed pod directly via the k8s API
-// (bypassing /containers/create, so the forwarder is NOT involved) and checks
-// `docker ps -a` includes it.
+// Bypasses /containers/create (no forwarder); covers the listing path alone.
 func TestDockerPsListsManagedPod(t *testing.T) {
 	env := newEnv(t)
 

@@ -24,8 +24,7 @@ import (
 
 const testNamespace = "docker-in-kubernetes"
 
-// TestMain wipes any managed pods left over from a previous run before any
-// test executes, so TestDockerPsEmpty and friends start from a clean slate.
+// TestMain wipes pods leaked by a previous failed run so TestDockerPsEmpty etc. start clean.
 func TestMain(m *testing.M) {
 	wipeStalePods()
 	os.Exit(m.Run())
@@ -57,8 +56,7 @@ type testEnv struct {
 	SocketPath string
 }
 
-// newEnv starts the daemon on a UNIX socket and returns helpers. Tests run
-// the real `docker` CLI against this socket.
+// newEnv starts the daemon on a UNIX socket so tests can drive `docker -H ...`.
 func newEnv(t *testing.T) *testEnv {
 	t.Helper()
 	if os.Getenv("KUBECONFIG") == "" {
@@ -74,9 +72,7 @@ func newEnv(t *testing.T) *testEnv {
 	registry := forwarder.NewRegistry()
 	fw := forwarder.NewSPDYForwarder(conn.Clientset, conn.REST, slog.Default())
 
-	// Use /tmp-rooted dir so the socket path fits in sun_path (104 bytes on
-	// darwin). t.TempDir() on darwin lives under /var/folders/... which is
-	// much longer than that.
+	// /tmp-rooted: darwin's sun_path is 104 bytes; t.TempDir() blows past it.
 	socketDir, err := os.MkdirTemp("/tmp", "dik")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
@@ -115,9 +111,7 @@ func newEnv(t *testing.T) *testEnv {
 	return &testEnv{Pods: pods, SocketPath: socketPath}
 }
 
-// docker runs the docker CLI against the test daemon with a per-call timeout.
-// Returns combined stdout+stderr and the exec error (or context.DeadlineExceeded
-// if the CLI hung).
+// docker runs the docker CLI against the daemon with a per-call timeout.
 func (e *testEnv) docker(t *testing.T, timeout time.Duration, args ...string) (string, error) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -131,13 +125,11 @@ func (e *testEnv) docker(t *testing.T, timeout time.Duration, args ...string) (s
 	return string(out), err
 }
 
-// dialSocket connects to the UNIX socket with a timeout.
 func dialSocket(path string, timeout time.Duration) (net.Conn, error) {
 	d := net.Dialer{Timeout: timeout}
 	return d.Dial("unix", path)
 }
 
-// cleanupPod best-effort deletes a pod by name on test completion.
 func cleanupPod(t *testing.T, pods *k8s.Pods, name string) {
 	t.Helper()
 	t.Cleanup(func() {
@@ -147,8 +139,6 @@ func cleanupPod(t *testing.T, pods *k8s.Pods, name string) {
 	})
 }
 
-// randSuffix returns a 6-char lowercase-alphanumeric suffix derived from the
-// monotonic clock; collisions across parallel tests are vanishingly rare.
 func randSuffix() string {
 	const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
 	now := time.Now().UnixNano()

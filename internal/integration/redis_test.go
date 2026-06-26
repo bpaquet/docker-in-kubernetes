@@ -10,12 +10,6 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// TestDockerVersion is the smallest possible integration test: spin up the
-// daemon on a UNIX socket, run `docker -H unix://... version`, confirm our
-// advertised API version round-trips through the CLI.
-//
-// More tests (run / ps / logs / rm) are added incrementally as each layer is
-// proven to work end-to-end.
 func TestDockerVersion(t *testing.T) {
 	env := newEnv(t)
 
@@ -26,9 +20,7 @@ func TestDockerVersion(t *testing.T) {
 	assert.Contains(t, out, "1.43", "expected API version 1.43 in output:\n%s", out)
 }
 
-// TestPing verifies the daemon answers /_ping without going through docker CLI.
-// Catches socket-binding regressions independently of the docker CLI being
-// installed or its version quirks.
+// Direct /_ping over the socket, no docker CLI involved.
 func TestPing(t *testing.T) {
 	env := newEnv(t)
 

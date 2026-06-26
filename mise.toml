@@ -50,7 +50,16 @@ if kind get clusters 2>/dev/null | grep -q '^dik-test$'; then
 else
   kind create cluster --name dik-test --kubeconfig ./tmp/integration-kubeconfig
 fi
-KUBECONFIG=./tmp/integration-kubeconfig kubectl create namespace docker-in-kubernetes --dry-run=client -o yaml | KUBECONFIG=./tmp/integration-kubeconfig kubectl apply -f -
+export KUBECONFIG=./tmp/integration-kubeconfig
+kubectl create namespace docker-in-kubernetes --dry-run=client -o yaml | kubectl apply -f -
+# The default ServiceAccount is auto-created by the namespace controller; pods
+# can't be scheduled until it exists. CI hits this race on fresh clusters.
+for i in $(seq 1 60); do
+  if kubectl get serviceaccount/default -n docker-in-kubernetes >/dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
 """
 
 [tasks.integration-down]

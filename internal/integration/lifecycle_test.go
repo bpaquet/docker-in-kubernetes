@@ -16,8 +16,7 @@ import (
 	"github.com/bpaquet/docker-in-kubernetes/internal/k8s"
 )
 
-// startAlpineSleep brings up a small alpine pod via docker run -d so the
-// lifecycle tests below don't pay the cost of pulling redis.
+// startAlpineSleep: cheap container for lifecycle tests that don't need redis.
 func startAlpineSleep(t *testing.T, env *testEnv) (containerID, podName string) {
 	t.Helper()
 	podName = "it-alp-" + randSuffix()
@@ -55,10 +54,7 @@ func TestDockerRmForceTerminatesAndRemoves(t *testing.T) {
 	}, 30*time.Second, 200*time.Millisecond, "pod should be gone after docker rm -f")
 }
 
-// TestDockerRmAfterKillIsNoOp verifies the design's "rm is no-op if pod is
-// already gone" rule: `docker kill` then `docker rm` should succeed, even
-// though `kill` deleted the underlying pod and our /containers/{id}/json
-// inspect would 404.
+// kill deletes the pod; subsequent rm must succeed (Design.md "rm is no-op").
 func TestDockerRmAfterKillIsNoOp(t *testing.T) {
 	env := newEnv(t)
 	id, name := startAlpineSleep(t, env)
@@ -113,9 +109,6 @@ func TestDockerInspectReturnsContainerFields(t *testing.T) {
 	assert.Contains(t, out, `"Image": "alpine:3"`, "docker inspect should include the image")
 }
 
-// TestDockerPortMapping verifies that -p HOST:CONTAINER bindings are echoed
-// back in docker ps and inspect, even when the workload itself doesn't need
-// port-forwarding to be verified.
 func TestDockerPortMapping(t *testing.T) {
 	env := newEnv(t)
 	name := "it-prt-" + randSuffix()

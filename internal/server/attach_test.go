@@ -12,9 +12,6 @@ import (
 	"github.com/bpaquet/docker-in-kubernetes/internal/dockerapi"
 )
 
-// TestCreateRejectsInteractive guards the UX contract: non-detached `docker run`
-// fails fast at create with a clear message, not later via a cryptic "unable
-// to upgrade to tcp" CLI error.
 func TestCreateRejectsInteractive(t *testing.T) {
 	for _, field := range []string{"AttachStdin", "AttachStdout", "AttachStderr", "OpenStdin", "Tty"} {
 		t.Run(field, func(t *testing.T) {

@@ -103,20 +103,7 @@ func (c *containerHandlers) start(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// wait: POST /containers/{id}/wait?condition=...
-//
-// The docker CLI's `docker run -d` calls /wait with condition=next-exit and
-// blocks reading the body until the wait subscription "completes", even after
-// the ID is printed. Blocking indefinitely (as real moby does) hangs the CLI.
-//
-// For now we short-circuit next-exit with an immediate {"StatusCode": 0}: the
-// CLI's wait goroutine completes, `docker run -d` returns, and no real Docker
-// command we implement loses information (we don't support --rm yet, and
-// `docker wait` (default condition=not-running) still blocks correctly).
-//
-// TODO: revisit once we understand why this CLI doesn't issue /start before
-// /wait. The implicit-start in /create may be confusing the CLI's runRun
-// sequence.
+// wait short-circuits condition=next-exit; see Design.md "Wait endpoint quirk".
 func (c *containerHandlers) wait(w http.ResponseWriter, r *http.Request) {
 	pod, ok := c.resolvePod(w, r)
 	if !ok {
@@ -171,21 +158,15 @@ func exitCodeFromPod(pod *corev1.Pod) (int64, bool) {
 	return 0, false
 }
 
-// stop: POST /containers/{id}/stop?t=<seconds>
 func (c *containerHandlers) stop(w http.ResponseWriter, r *http.Request) {
 	c.terminate(w, r, parseGrace(r.URL.Query().Get("t"), 10*time.Second))
 }
 
-// kill: POST /containers/{id}/kill?signal=...   (signal is ignored; we delete)
 func (c *containerHandlers) kill(w http.ResponseWriter, r *http.Request) {
 	c.terminate(w, r, 0)
 }
 
-// delete: DELETE /containers/{id}?force=...
-//
-// Per Design.md, rm is a no-op if the pod is already gone: this lets
-// `docker stop x && docker rm x` succeed even though our stop deleted
-// the pod and an inspect would 404.
+// delete is a no-op if the pod is already gone (lets `stop && rm` succeed).
 func (c *containerHandlers) delete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	pod, err := c.pods.FindByID(r.Context(), id)
@@ -200,7 +181,7 @@ func (c *containerHandlers) delete(w http.ResponseWriter, r *http.Request) {
 	c.deletePod(w, r, pod, 0)
 }
 
-// terminate is the kill/stop path: pod must exist (404 otherwise).
+// terminate (kill/stop) 404s on a missing pod, unlike delete.
 func (c *containerHandlers) terminate(w http.ResponseWriter, r *http.Request, grace time.Duration) {
 	pod, ok := c.resolvePod(w, r)
 	if !ok {
@@ -286,7 +267,7 @@ func (c *containerHandlers) logs(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// resolvePod looks up the container by ID and writes a 404 if absent.
+// resolvePod looks up the container by ID, writing 404 if absent.
 func (c *containerHandlers) resolvePod(w http.ResponseWriter, r *http.Request) (*corev1.Pod, bool) {
 	id := r.PathValue("id")
 	pod, err := c.pods.FindByID(r.Context(), id)
@@ -301,7 +282,7 @@ func (c *containerHandlers) resolvePod(w http.ResponseWriter, r *http.Request) (
 	return pod, true
 }
 
-// ensureRunning waits for the pod to be Ready and starts forwarders. Idempotent.
+// ensureRunning blocks on Ready, then opens forwarders. Idempotent.
 func (c *containerHandlers) ensureRunning(ctx context.Context, name string, mappings []podspec.PortMapping) error {
 	if err := c.pods.WaitForReady(ctx, name); err != nil {
 		return err
@@ -325,7 +306,7 @@ func (c *containerHandlers) ensureRunning(ctx context.Context, name string, mapp
 	return nil
 }
 
-// loadMappingsFromPod recovers the port mappings stored at create time.
+// loadMappingsFromPod decodes the ports annotation written at create time.
 func loadMappingsFromPod(pod *corev1.Pod) ([]podspec.PortMapping, error) {
 	raw := pod.Annotations[podspec.AnnotationPorts]
 	if raw == "" {
@@ -356,8 +337,7 @@ func toForwarderMappings(ports []podspec.PortMapping) ([]forwarder.Mapping, erro
 	return out, nil
 }
 
-// boolQuery treats `?key=1` and `?key=true` as truthy, matching docker CLI
-// query-string conventions.
+// boolQuery: "1" or "true" → true. Matches Docker CLI's query-string convention.
 func boolQuery(r *http.Request, key string) bool {
 	v := r.URL.Query().Get(key)
 	return v == "1" || strings.EqualFold(v, "true")
@@ -373,10 +353,9 @@ func parseGrace(s string, def time.Duration) time.Duration {
 	return def
 }
 
-// writeMultiplexedChunk writes one Docker stdcopy frame: 1B stream + 3B pad +
-// 4B length (big-endian) + payload. stream=1 stdout, 2 stderr.
+// writeMultiplexedChunk emits one Docker stdcopy frame (1B stream, 3B pad, 4B BE size).
 func writeMultiplexedChunk(w io.Writer, stream byte, payload []byte) error {
-	const maxChunk = 1 << 16 // bufio default line buffer is 64KiB; cap to keep header valid
+	const maxChunk = 1 << 16
 	chunks := payload
 	for len(chunks) > 0 {
 		n := len(chunks)

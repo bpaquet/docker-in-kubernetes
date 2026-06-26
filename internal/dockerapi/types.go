@@ -1,7 +1,4 @@
-// Package dockerapi declares the subset of Docker Engine API JSON types that
-// docker-in-kubernetes consumes (from CLI requests) and produces (in
-// responses). Hand-rolled to avoid pulling moby/moby; fields are kept in sync
-// with the docker CLI's expectations for the implemented endpoints.
+// Package dockerapi declares the Docker Engine API JSON shapes we use.
 package dockerapi
 
 // CreateRequest is the body of POST /containers/create.
@@ -29,8 +26,7 @@ type HostConfig struct {
 	AutoRemove   bool                     `json:"AutoRemove,omitempty"`
 }
 
-// PortBinding is one host:container port mapping. HostIP is ignored;
-// host-side always binds 127.0.0.1.
+// PortBinding is one host:container port mapping. HostIP is ignored (we always bind 127.0.0.1).
 type PortBinding struct {
 	HostIP   string `json:"HostIp,omitempty"`
 	HostPort string `json:"HostPort,omitempty"`
@@ -70,7 +66,7 @@ type Port struct {
 	Type        string `json:"Type"`
 }
 
-// ContainerInspect is returned by GET /containers/{id}/json. Slim subset.
+// ContainerInspect is returned by GET /containers/{id}/json.
 type ContainerInspect struct {
 	ID              string             `json:"Id"`
 	Created         string             `json:"Created"`
@@ -121,20 +117,18 @@ type ErrorResponse struct {
 	Message string `json:"message"`
 }
 
-// WaitResponse is returned by POST /containers/{id}/wait once the wait
-// condition is met.
+// WaitResponse is returned by POST /containers/{id}/wait.
 type WaitResponse struct {
 	StatusCode int64      `json:"StatusCode"`
 	Error      *WaitError `json:"Error,omitempty"`
 }
 
-// WaitError is the optional Error sub-object in WaitResponse.
+// WaitError is the optional Error in WaitResponse.
 type WaitError struct {
 	Message string `json:"Message"`
 }
 
-// InfoResponse is a minimal /info subset; daemon identification is enough for
-// the docker CLI not to bail out.
+// InfoResponse is the minimal /info subset the docker CLI accepts.
 type InfoResponse struct {
 	ID                string `json:"ID"`
 	Name              string `json:"Name"`

@@ -14,25 +14,23 @@ import (
 	"github.com/bpaquet/docker-in-kubernetes/internal/dockerapi"
 )
 
-// PortMapping captures one host:container port pair, preserved as JSON in the
-// pod annotation so it survives daemon restarts.
+// PortMapping is one host:container port pair, persisted as a pod annotation.
 type PortMapping struct {
 	HostPort      string `json:"host_port"`
 	ContainerPort uint16 `json:"container_port"`
 	Protocol      string `json:"protocol"`
 }
 
-// BuildInput is everything Build needs from outside.
+// BuildInput is the input to Build.
 type BuildInput struct {
 	Namespace  string
-	DockerName string // raw --name from the docker CLI, may be empty
-	Project    string // optional; defaults to DefaultProject
+	DockerName string
+	Project    string
 	Now        time.Time
 	Request    dockerapi.CreateRequest
 }
 
-// BuildResult is the spec plus the per-container metadata downstream callers
-// need without re-parsing annotations.
+// BuildResult is the output of Build.
 type BuildResult struct {
 	Pod          *corev1.Pod
 	PodName      string
@@ -124,8 +122,8 @@ func parsePortBindings(
 	bindings map[string][]dockerapi.PortBinding,
 	exposed map[string]struct{},
 ) ([]PortMapping, error) {
-	// Deduplicate by "containerPort/proto" key. PortBindings is authoritative;
-	// ExposedPorts fills in the rest.
+	// PortBindings is authoritative; ExposedPorts only contributes ports that
+	// aren't already bound.
 	type key struct {
 		port  uint16
 		proto string
