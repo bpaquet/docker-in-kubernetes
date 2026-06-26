@@ -97,6 +97,9 @@ func buildInspect(pod *corev1.Pod) dockerapi.ContainerInspect {
 		inspectState.FinishedAt = time.Now().UTC().Format(time.RFC3339)
 	}
 
+	memory, _ := strconv.ParseInt(pod.Annotations[podspec.AnnotationMemory], 10, 64)
+	nanoCPUs, _ := strconv.ParseInt(pod.Annotations[podspec.AnnotationNanoCPUs], 10, 64)
+
 	return dockerapi.ContainerInspect{
 		ID:      id,
 		Created: created.UTC().Format(time.RFC3339Nano),
@@ -107,11 +110,14 @@ func buildInspect(pod *corev1.Pod) dockerapi.ContainerInspect {
 			Image:    image,
 			Hostname: pod.Spec.Hostname,
 			Env:      env,
+			User:     pod.Annotations[podspec.AnnotationUser],
 			Labels:   userLabelsFromPod(pod),
 		},
 		HostConfig: dockerapi.HostConfig{
 			NetworkMode:  "default",
 			PortBindings: ports,
+			Memory:       memory,
+			NanoCPUs:     nanoCPUs,
 		},
 		NetworkSettings: dockerapi.InspectNetworkInfo{Ports: ports},
 	}
@@ -256,6 +262,8 @@ func inspectForPending(p *pendingContainer) dockerapi.ContainerInspect {
 		_ = json.Unmarshal([]byte(raw), &env)
 	}
 	ports := portsFromAnnotation(p.Spec)
+	memory, _ := strconv.ParseInt(p.Spec.Annotations[podspec.AnnotationMemory], 10, 64)
+	nanoCPUs, _ := strconv.ParseInt(p.Spec.Annotations[podspec.AnnotationNanoCPUs], 10, 64)
 	return dockerapi.ContainerInspect{
 		ID:      p.ID,
 		Created: p.CreatedAt.UTC().Format(time.RFC3339Nano),
@@ -266,9 +274,15 @@ func inspectForPending(p *pendingContainer) dockerapi.ContainerInspect {
 			Image:    p.Spec.Annotations[podspec.AnnotationImage],
 			Hostname: p.Spec.Spec.Hostname,
 			Env:      env,
+			User:     p.Spec.Annotations[podspec.AnnotationUser],
 			Labels:   userLabelsFromPod(p.Spec),
 		},
-		HostConfig:      dockerapi.HostConfig{NetworkMode: "default", PortBindings: ports},
+		HostConfig: dockerapi.HostConfig{
+			NetworkMode:  "default",
+			PortBindings: ports,
+			Memory:       memory,
+			NanoCPUs:     nanoCPUs,
+		},
 		NetworkSettings: dockerapi.InspectNetworkInfo{Ports: ports},
 	}
 }

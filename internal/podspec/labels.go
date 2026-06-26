@@ -12,6 +12,9 @@ const (
 	AnnotationEnv        = "docker-in-kubernetes.io/env"
 	AnnotationDockerName = "docker-in-kubernetes.io/docker-name"
 	AnnotationLabels     = "docker-in-kubernetes.io/labels"
+	AnnotationUser       = "docker-in-kubernetes.io/user"
+	AnnotationMemory     = "docker-in-kubernetes.io/memory"
+	AnnotationNanoCPUs   = "docker-in-kubernetes.io/nano-cpus"
 
 	// DefaultProject is reserved for Docker Compose forward-compat.
 	DefaultProject = "default"
