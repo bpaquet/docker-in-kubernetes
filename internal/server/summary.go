@@ -226,3 +226,49 @@ func rfc3339(t time.Time) string {
 	}
 	return t.UTC().Format(time.RFC3339Nano)
 }
+
+func summaryForPending(p *pendingContainer) dockerapi.ContainerSummary {
+	name := p.DockerName
+	if name == "" {
+		name = p.Spec.Name
+	}
+	return dockerapi.ContainerSummary{
+		ID:         p.ID,
+		Names:      []string{"/" + name},
+		Image:      p.Spec.Annotations[podspec.AnnotationImage],
+		Command:    summaryCommand(p.Spec),
+		Created:    p.CreatedAt.Unix(),
+		Ports:      summaryPorts(p.Spec),
+		Labels:     userLabelsFromPod(p.Spec),
+		State:      "created",
+		Status:     "Created",
+		HostConfig: dockerapi.SummaryHostConfig{NetworkMode: "default"},
+	}
+}
+
+func inspectForPending(p *pendingContainer) dockerapi.ContainerInspect {
+	name := p.DockerName
+	if name == "" {
+		name = p.Spec.Name
+	}
+	var env []string
+	if raw := p.Spec.Annotations[podspec.AnnotationEnv]; raw != "" {
+		_ = json.Unmarshal([]byte(raw), &env)
+	}
+	ports := portsFromAnnotation(p.Spec)
+	return dockerapi.ContainerInspect{
+		ID:      p.ID,
+		Created: p.CreatedAt.UTC().Format(time.RFC3339Nano),
+		Image:   p.Spec.Annotations[podspec.AnnotationImage],
+		Name:    "/" + name,
+		State:   dockerapi.InspectState{Status: "created"},
+		Config: dockerapi.InspectConfig{
+			Image:    p.Spec.Annotations[podspec.AnnotationImage],
+			Hostname: p.Spec.Spec.Hostname,
+			Env:      env,
+			Labels:   userLabelsFromPod(p.Spec),
+		},
+		HostConfig:      dockerapi.HostConfig{NetworkMode: "default", PortBindings: ports},
+		NetworkSettings: dockerapi.InspectNetworkInfo{Ports: ports},
+	}
+}
