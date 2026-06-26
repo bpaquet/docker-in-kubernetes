@@ -26,12 +26,13 @@ import (
 )
 
 type containerHandlers struct {
-	pods      PodStore
-	forwarder PortForwarder
-	registry  *forwarder.Registry
-	execs     *execStore
-	pending   *pendingStore
-	logger    *slog.Logger
+	pods        PodStore
+	forwarder   PortForwarder
+	registry    *forwarder.Registry
+	execs       *execStore
+	pending     *pendingStore
+	logger      *slog.Logger
+	cleanupPoll time.Duration
 }
 
 func (c *containerHandlers) register(mux *http.ServeMux) {
@@ -533,7 +534,45 @@ func (c *containerHandlers) ensureRunning(ctx context.Context, name string, mapp
 		return fmt.Errorf("open forwarder: %w", err)
 	}
 	c.registry.Set(id, h)
+	// Watcher must outlive the /start request — daemon-scoped, not request-scoped.
+	go c.watchPodForCleanup(name, id) //nolint:gosec
 	return nil
+}
+
+// watchPodForCleanup polls until the container terminates (or the pod is gone)
+// and closes the forwarder, freeing the host port. Exits early if the
+// forwarder is closed by another path (stop/kill/rm/wait?condition=removed).
+func (c *containerHandlers) watchPodForCleanup(name, id string) {
+	poll := c.cleanupPoll
+	for {
+		if !c.registry.Has(id) {
+			return
+		}
+		pod, err := c.pods.Get(context.Background(), name)
+		if errors.Is(err, k8s.ErrNotFound) {
+			_ = c.registry.Close(id)
+			return
+		}
+		if err == nil {
+			if podTerminated(pod) {
+				_ = c.registry.Close(id)
+				return
+			}
+		}
+		time.Sleep(poll)
+	}
+}
+
+func podTerminated(pod *corev1.Pod) bool {
+	if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+		return true
+	}
+	for _, cs := range pod.Status.ContainerStatuses {
+		if cs.State.Terminated != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // loadMappingsFromPod decodes the ports annotation written at create time.

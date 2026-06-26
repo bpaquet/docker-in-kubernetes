@@ -52,7 +52,7 @@ func (f *fakeForwarder) Open(_ context.Context, _, _ string, _ []forwarder.Mappi
 	return &fakeHandle{}, nil
 }
 
-func newTestHandler(t *testing.T, objs ...runtime.Object) (*httptest.Server, *fake.Clientset, *fakeForwarder) {
+func newTestHandler(t *testing.T, objs ...runtime.Object) (*httptest.Server, *fake.Clientset, *fakeForwarder, *forwarder.Registry) {
 	t.Helper()
 	cs := fake.NewClientset(objs...)
 	// Auto-mark pods as Ready immediately on Create so WaitForReady doesn't hang
@@ -76,18 +76,19 @@ func newTestHandler(t *testing.T, objs ...runtime.Object) (*httptest.Server, *fa
 	registry := forwarder.NewRegistry()
 
 	h := server.New(server.Config{
-		DaemonVersion: "0.0.0-test",
-		Pods:          store,
-		Forwarder:     fw,
-		Forwards:      registry,
+		DaemonVersion:       "0.0.0-test",
+		Pods:                store,
+		Forwarder:           fw,
+		Forwards:            registry,
+		CleanupPollInterval: 5 * time.Millisecond,
 	})
 	ts := httptest.NewServer(h)
 	t.Cleanup(ts.Close)
-	return ts, cs, fw
+	return ts, cs, fw, registry
 }
 
 func TestCreateContainerHappyPath(t *testing.T) {
-	ts, cs, fw := newTestHandler(t)
+	ts, cs, fw, _ := newTestHandler(t)
 
 	body, _ := json.Marshal(dockerapi.CreateRequest{
 		Image: "redis",
@@ -120,7 +121,7 @@ func TestCreateContainerHappyPath(t *testing.T) {
 }
 
 func TestCreateContainerRejectsEmptyImage(t *testing.T) {
-	ts, _, _ := newTestHandler(t)
+	ts, _, _, _ := newTestHandler(t)
 
 	body, _ := json.Marshal(dockerapi.CreateRequest{})
 	resp, err := http.Post(ts.URL+"/v1.43/containers/create", "application/json", bytes.NewReader(body))
@@ -130,7 +131,7 @@ func TestCreateContainerRejectsEmptyImage(t *testing.T) {
 }
 
 func TestStartOnUnknownReturns404(t *testing.T) {
-	ts, _, _ := newTestHandler(t)
+	ts, _, _, _ := newTestHandler(t)
 
 	resp, err := http.Post(ts.URL+"/v1.43/containers/deadbeef/start", "", nil)
 	require.NoError(t, err)
@@ -139,7 +140,7 @@ func TestStartOnUnknownReturns404(t *testing.T) {
 }
 
 func TestStartIdempotent(t *testing.T) {
-	ts, _, fw := newTestHandler(t)
+	ts, _, fw, _ := newTestHandler(t)
 
 	body, _ := json.Marshal(dockerapi.CreateRequest{
 		Image: "redis",
@@ -164,7 +165,7 @@ func TestStartIdempotent(t *testing.T) {
 func TestListContainers(t *testing.T) {
 	pod := managedPod("redis-1")
 	pod.Status = corev1.PodStatus{Phase: corev1.PodRunning}
-	ts, _, _ := newTestHandler(t, pod)
+	ts, _, _, _ := newTestHandler(t, pod)
 
 	resp, err := http.Get(ts.URL + "/v1.43/containers/json")
 	require.NoError(t, err)
@@ -183,7 +184,7 @@ func TestListContainersFiltersStoppedByDefault(t *testing.T) {
 	running.Status = corev1.PodStatus{Phase: corev1.PodRunning}
 	exited := managedPod("redis-2")
 	exited.Status = corev1.PodStatus{Phase: corev1.PodSucceeded}
-	ts, _, _ := newTestHandler(t, running, exited)
+	ts, _, _, _ := newTestHandler(t, running, exited)
 
 	resp, err := http.Get(ts.URL + "/v1.43/containers/json")
 	require.NoError(t, err)
@@ -200,7 +201,7 @@ func TestListContainersAllIncludesExited(t *testing.T) {
 	running.Status = corev1.PodStatus{Phase: corev1.PodRunning}
 	exited := managedPod("redis-2")
 	exited.Status = corev1.PodStatus{Phase: corev1.PodSucceeded}
-	ts, _, _ := newTestHandler(t, running, exited)
+	ts, _, _, _ := newTestHandler(t, running, exited)
 
 	resp, err := http.Get(ts.URL + "/v1.43/containers/json?all=1")
 	require.NoError(t, err)
@@ -218,7 +219,7 @@ func TestInspectReturnsPodFields(t *testing.T) {
 		podspec.AnnotationImage:      "redis:7",
 		podspec.AnnotationDockerName: "redis-1",
 	}
-	ts, _, _ := newTestHandler(t, pod)
+	ts, _, _, _ := newTestHandler(t, pod)
 
 	id := podspec.ContainerID(testNamespace, "redis-1")
 	resp, err := http.Get(ts.URL + "/v1.43/containers/" + id + "/json")
@@ -235,8 +236,39 @@ func TestInspectReturnsPodFields(t *testing.T) {
 	assert.True(t, got.State.Running)
 }
 
+func TestForwarderClosedOnContainerExit(t *testing.T) {
+	ts, cs, _, registry := newTestHandler(t)
+
+	body, _ := json.Marshal(dockerapi.CreateRequest{
+		Image: "redis",
+		HostConfig: dockerapi.HostConfig{
+			PortBindings: map[string][]dockerapi.PortBinding{"6379/tcp": {{HostPort: "6379"}}},
+		},
+	})
+	resp, err := http.Post(ts.URL+"/v1.43/containers/create?name=myredis", "application/json", bytes.NewReader(body))
+	require.NoError(t, err)
+	resp.Body.Close()
+
+	id := podspec.ContainerID(testNamespace, "myredis")
+	startResp, err := http.Post(ts.URL+"/v1.43/containers/"+id+"/start", "", nil)
+	require.NoError(t, err)
+	startResp.Body.Close()
+
+	require.True(t, registry.Has(id), "forwarder should be registered after /start")
+
+	pod, err := cs.CoreV1().Pods(testNamespace).Get(t.Context(), "myredis", metav1.GetOptions{})
+	require.NoError(t, err)
+	pod.Status.Phase = corev1.PodSucceeded
+	_, err = cs.CoreV1().Pods(testNamespace).UpdateStatus(t.Context(), pod, metav1.UpdateOptions{})
+	require.NoError(t, err)
+
+	assert.Eventually(t, func() bool { return !registry.Has(id) },
+		2*time.Second, 10*time.Millisecond,
+		"forwarder should be closed once the container exits")
+}
+
 func TestKillDeletesPodAndClosesForwarder(t *testing.T) {
-	ts, cs, _ := newTestHandler(t)
+	ts, cs, _, _ := newTestHandler(t)
 
 	body, _ := json.Marshal(dockerapi.CreateRequest{
 		Image: "redis",
@@ -259,7 +291,7 @@ func TestKillDeletesPodAndClosesForwarder(t *testing.T) {
 }
 
 func TestDeleteMissingContainerIsNoOp(t *testing.T) {
-	ts, _, _ := newTestHandler(t)
+	ts, _, _, _ := newTestHandler(t)
 
 	req, _ := http.NewRequest(http.MethodDelete, ts.URL+"/v1.43/containers/abc", nil)
 	resp, err := http.DefaultClient.Do(req)
@@ -269,7 +301,7 @@ func TestDeleteMissingContainerIsNoOp(t *testing.T) {
 }
 
 func TestInfo(t *testing.T) {
-	ts, _, _ := newTestHandler(t)
+	ts, _, _, _ := newTestHandler(t)
 
 	resp, err := http.Get(ts.URL + "/info")
 	require.NoError(t, err)
@@ -285,7 +317,7 @@ func TestInfo(t *testing.T) {
 func TestLogsStreamsMultiplexed(t *testing.T) {
 	pod := managedPod("redis-1")
 	pod.Status = corev1.PodStatus{Phase: corev1.PodRunning}
-	ts, _, _ := newTestHandler(t, pod)
+	ts, _, _, _ := newTestHandler(t, pod)
 
 	id := podspec.ContainerID(testNamespace, "redis-1")
 	resp, err := http.Get(ts.URL + "/v1.43/containers/" + id + "/logs?stdout=1")
