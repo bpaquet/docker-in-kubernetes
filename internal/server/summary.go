@@ -36,6 +36,7 @@ func buildSummary(pod *corev1.Pod) dockerapi.ContainerSummary {
 		created = pod.CreationTimestamp.Time
 	}
 
+	term := terminationOf(pod)
 	return dockerapi.ContainerSummary{
 		ID:         id,
 		Names:      []string{"/" + name},
@@ -46,9 +47,27 @@ func buildSummary(pod *corev1.Pod) dockerapi.ContainerSummary {
 		Ports:      summaryPorts(pod),
 		Labels:     userLabelsFromPod(pod),
 		State:      state,
-		Status:     status(state, created),
+		Status:     status(state, created, term, time.Now()),
 		HostConfig: dockerapi.SummaryHostConfig{NetworkMode: "default"},
 	}
+}
+
+// terminationOf returns the first container's terminated state, or nil.
+type termination struct {
+	exitCode   int32
+	finishedAt time.Time
+}
+
+func terminationOf(pod *corev1.Pod) *termination {
+	for _, cs := range pod.Status.ContainerStatuses {
+		if cs.State.Terminated != nil {
+			return &termination{
+				exitCode:   cs.State.Terminated.ExitCode,
+				finishedAt: cs.State.Terminated.FinishedAt.Time,
+			}
+		}
+	}
+	return nil
 }
 
 // userLabelsFromPod returns the labels the user passed via --label, falling
@@ -93,7 +112,10 @@ func buildInspect(pod *corev1.Pod) dockerapi.ContainerInspect {
 		Running:   state == "running",
 		StartedAt: rfc3339(startedAt),
 	}
-	if state == "exited" {
+	if term := terminationOf(pod); term != nil {
+		inspectState.ExitCode = int(term.exitCode)
+		inspectState.FinishedAt = rfc3339(term.finishedAt)
+	} else if state == "exited" {
 		inspectState.FinishedAt = time.Now().UTC().Format(time.RFC3339)
 	}
 
@@ -197,15 +219,23 @@ func dockerStateFromPhase(phase corev1.PodPhase) string {
 	}
 }
 
-func status(state string, created time.Time) string {
+func status(state string, created time.Time, term *termination, now time.Time) string {
 	switch state {
 	case "running":
 		if created.IsZero() {
 			return "Up"
 		}
-		return "Up " + humanDuration(time.Since(created))
+		return "Up " + humanDuration(now.Sub(created))
 	case "exited":
-		return "Exited (0)"
+		code := int32(0)
+		var ago string
+		if term != nil {
+			code = term.exitCode
+			if !term.finishedAt.IsZero() {
+				ago = " " + humanDuration(now.Sub(term.finishedAt)) + " ago"
+			}
+		}
+		return fmt.Sprintf("Exited (%d)%s", code, ago)
 	case "created":
 		return "Created"
 	case "dead":

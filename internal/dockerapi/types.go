@@ -271,9 +271,7 @@ type InfoResponse struct {
 	OperatingSystem   string `json:"OperatingSystem"`
 	OSType            string `json:"OSType"`
 	Architecture      string `json:"Architecture"`
-	KernelVersion     string `json:"KernelVersion"`
 	NCPU              int    `json:"NCPU"`
-	MemTotal          int64  `json:"MemTotal"`
 	Driver            string `json:"Driver"`
 	ContainersRunning int    `json:"ContainersRunning"`
 	Containers        int    `json:"Containers"`

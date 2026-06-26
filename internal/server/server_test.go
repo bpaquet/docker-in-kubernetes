@@ -16,7 +16,11 @@ import (
 
 func newTestServer(t *testing.T) *httptest.Server {
 	t.Helper()
-	h := server.New(server.Config{DaemonVersion: "0.0.0-test"})
+	h := server.New(server.Config{
+		DaemonVersion: "0.0.0-test",
+		GitCommit:     "deadbeef",
+		BuildTime:     "2026-01-02T03:04:05Z",
+	})
 	ts := httptest.NewServer(h)
 	t.Cleanup(ts.Close)
 	return ts
@@ -84,15 +88,19 @@ func TestVersion(t *testing.T) {
 				Version       string `json:"Version"`
 				APIVersion    string `json:"ApiVersion"`
 				MinAPIVersion string `json:"MinAPIVersion"`
+				GitCommit     string `json:"GitCommit"`
 				GoVersion     string `json:"GoVersion"`
 				Os            string `json:"Os"`
 				Arch          string `json:"Arch"`
+				BuildTime     string `json:"BuildTime"`
 			}
 			require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
 
 			assert.Equal(t, "0.0.0-test", got.Version)
 			assert.Equal(t, server.APIVersion, got.APIVersion)
 			assert.Equal(t, server.MinAPIVersion, got.MinAPIVersion)
+			assert.Equal(t, "deadbeef", got.GitCommit)
+			assert.Equal(t, "2026-01-02T03:04:05Z", got.BuildTime)
 			assert.Equal(t, runtime.Version(), got.GoVersion)
 			assert.Equal(t, "linux", got.Os)
 			assert.Equal(t, runtime.GOARCH, got.Arch)
