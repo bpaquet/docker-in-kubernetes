@@ -69,6 +69,21 @@ func TestImagesCreate(t *testing.T) {
 	}
 }
 
+// docker compose pulls with fromImage=docker.io/library/<name> but inspects
+// with the short name. Canonicalization makes both paths converge.
+func TestComposePullThenInspect(t *testing.T) {
+	ts, _ := newImageTestServer(t)
+	resp, err := http.Post(ts.URL+"/v1.43/images/create?fromImage=docker.io/library/redis&tag=latest", "", nil)
+	require.NoError(t, err)
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+
+	resp, err = http.Get(ts.URL + "/v1.43/images/redis/json")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
 func TestImagesCreateMissingFromImage(t *testing.T) {
 	ts, store := newImageTestServer(t)
 	resp, err := http.Post(ts.URL+"/v1.43/images/create", "", nil)

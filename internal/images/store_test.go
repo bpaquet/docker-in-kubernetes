@@ -77,6 +77,45 @@ func TestStoreFind(t *testing.T) {
 	}
 }
 
+// docker compose pulls with the normalized name and inspects with the short
+// one. Canonicalization must hide that asymmetry.
+func TestStoreCanonicalizesDockerHubRefs(t *testing.T) {
+	now := time.Date(2026, 6, 26, 10, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name      string
+		recordRef string
+		lookups   []string
+	}{
+		{"docker.io/library/x ↔ x", "docker.io/library/redis:latest", []string{"redis", "redis:latest", "docker.io/library/redis", "library/redis"}},
+		{"library/x ↔ x", "library/postgres:16", []string{"postgres:16", "library/postgres:16", "docker.io/library/postgres:16"}},
+		{"docker.io/user/x ↔ user/x", "docker.io/grafana/grafana:11", []string{"grafana/grafana:11", "docker.io/grafana/grafana:11"}},
+		{"index.docker.io alias", "index.docker.io/library/nginx:latest", []string{"nginx", "nginx:latest", "docker.io/library/nginx:latest"}},
+		{"digest under docker.io/library", "docker.io/library/redis@sha256:deadbeef", []string{"redis@sha256:deadbeef", "library/redis@sha256:deadbeef"}},
+		{"non-hub registry untouched", "ghcr.io/foo/bar:1", []string{"ghcr.io/foo/bar:1"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := images.New()
+			s.Record(tc.recordRef, "", now)
+			for _, lookup := range tc.lookups {
+				_, ok := s.Find(lookup)
+				assert.True(t, ok, "Find(%q) should hit", lookup)
+			}
+		})
+	}
+}
+
+// Pull as full ref, remove as short — must succeed.
+func TestStoreRemoveCanonical(t *testing.T) {
+	s := images.New()
+	s.Record("docker.io/library/redis:latest", "latest", time.Now())
+	r, ok := s.Remove("redis")
+	require.True(t, ok)
+	assert.Equal(t, "redis:latest", r.Ref)
+	assert.False(t, s.Has("docker.io/library/redis:latest"))
+}
+
 func TestStoreRemove(t *testing.T) {
 	s := images.New()
 	s.Record("redis:alpine", "alpine", time.Now())
