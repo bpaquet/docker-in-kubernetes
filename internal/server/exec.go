@@ -97,11 +97,14 @@ func (c *containerHandlers) execStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Drain the JSON body using ContentLength only — using json.Decoder here
-	// risks the decoder buffering past the body into the post-upgrade stdin
-	// stream, dropping the first bytes the CLI writes.
+	// Drain the JSON body without json.Decoder — its bufio would buffer past
+	// the body into the post-upgrade stdin stream, dropping the first bytes
+	// the CLI writes. CopyN when ContentLength is known; Copy as a fallback
+	// for chunked transfer (ContentLength == -1).
 	if r.ContentLength > 0 {
 		_, _ = io.CopyN(io.Discard, r.Body, r.ContentLength)
+	} else if r.ContentLength < 0 {
+		_, _ = io.Copy(io.Discard, r.Body)
 	}
 
 	conn, brw, err := http.NewResponseController(w).Hijack()

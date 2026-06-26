@@ -58,11 +58,10 @@ func (c *containerHandlers) register(mux *http.ServeMux) {
 
 // resize is a no-op stub: TTY resize forwarding needs a TerminalSizeQueue
 // wired into the in-flight SPDY attach, which we don't yet plumb. Returning
-// 200 keeps the docker CLI from logging a warning on every keystroke.
-func (c *containerHandlers) resize(w http.ResponseWriter, r *http.Request) {
-	if _, ok := c.resolvePod(w, r); !ok {
-		return
-	}
+// 200 keeps the docker CLI from logging a warning on every keystroke. We
+// deliberately skip the resolvePod apiserver Get — VSCode / tmux can send
+// resize frames at 10+Hz and the handler does nothing with the pod anyway.
+func (c *containerHandlers) resize(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -189,18 +188,8 @@ func (c *containerHandlers) create(w http.ResponseWriter, r *http.Request) {
 
 	id := podspec.ContainerID(c.pods.Namespace(), built.PodName)
 
-	if dockerName != "" {
-		// Match docker semantics: duplicate --name → 409.
-		if c.pending.getByRef(dockerName) != nil {
-			writeError(w, http.StatusConflict, "Conflict. The container name \""+dockerName+"\" is already in use")
-			return
-		}
-		if _, err := c.pods.Get(r.Context(), built.PodName); err == nil {
-			writeError(w, http.StatusConflict, "Conflict. The container name \""+dockerName+"\" is already in use")
-			return
-		}
-	}
-
+	// Allocate host ports BEFORE reserving the name so allocation failures
+	// don't leave a stranded reservation behind.
 	if err := allocateHostPorts(built.PortMappings); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -210,14 +199,28 @@ func (c *containerHandlers) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	c.pending.put(&pendingContainer{
+	entry := &pendingContainer{
 		ID:         id,
 		DockerName: dockerName,
 		Spec:       built.Pod,
 		Mappings:   built.PortMappings,
 		CreatedAt:  time.Now().UTC(),
 		startCh:    make(chan struct{}),
-	})
+	}
+
+	// Reserve in the pending store FIRST so two concurrent /create calls
+	// racing on the same --name can't both pass the duplicate-check.
+	if !c.pending.reserve(entry, dockerName) {
+		writeError(w, http.StatusConflict, "Conflict. The container name \""+dockerName+"\" is already in use")
+		return
+	}
+	if dockerName != "" {
+		if _, err := c.pods.Get(r.Context(), built.PodName); err == nil {
+			c.pending.remove(id)
+			writeError(w, http.StatusConflict, "Conflict. The container name \""+dockerName+"\" is already in use")
+			return
+		}
+	}
 	writeJSON(w, http.StatusCreated, dockerapi.CreateResponse{ID: id, Warnings: []string{}})
 }
 
@@ -305,32 +308,40 @@ func (c *containerHandlers) wait(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	exit, err := c.waitForExit(r.Context(), pod.Name)
+	exit, gone, err := c.waitForExit(r.Context(), pod.Name)
 	if err != nil {
 		return
 	}
-	if r.URL.Query().Get("condition") == "removed" {
+	resp := dockerapi.WaitResponse{StatusCode: exit}
+	if gone {
+		// Pod vanished mid-wait without us deleting it (external GC, eviction,
+		// namespace teardown). Real dockerd surfaces the same via WaitResponse.Error.
+		resp.Error = &dockerapi.WaitError{Message: "container was removed before exit was observed"}
+	} else if r.URL.Query().Get("condition") == "removed" {
 		_ = c.registry.Close(podspec.ContainerID(pod.Namespace, pod.Name))
 		_ = c.pods.Delete(r.Context(), pod.Name, 0)
 	}
-	_ = json.NewEncoder(w).Encode(dockerapi.WaitResponse{StatusCode: exit})
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
-func (c *containerHandlers) waitForExit(ctx context.Context, name string) (int64, error) {
+// waitForExit blocks until the container's exit code is observable. gone=true
+// means the pod disappeared from the apiserver mid-wait — the caller decides
+// how to surface that (real dockerd reports it via WaitResponse.Error).
+func (c *containerHandlers) waitForExit(ctx context.Context, name string) (exit int64, gone bool, err error) {
 	for {
 		pod, err := c.pods.Get(ctx, name)
 		if errors.Is(err, k8s.ErrNotFound) {
-			return 0, nil
+			return 0, true, nil
 		}
 		if err != nil {
-			return 0, err
+			return 0, false, err
 		}
 		if exit, done := exitCodeFromPod(pod); done {
-			return exit, nil
+			return exit, false, nil
 		}
 		select {
 		case <-ctx.Done():
-			return 0, ctx.Err()
+			return 0, false, ctx.Err()
 		case <-time.After(exitPollInterval):
 		}
 	}
