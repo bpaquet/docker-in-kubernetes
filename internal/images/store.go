@@ -53,17 +53,25 @@ func (s *Store) Record(ref, tag string, now time.Time) Record {
 // `docker.io/library/redis`, `library/redis`, and `redis` all hash to `redis`.
 // Why: docker compose normalizes refs on pull (`fromImage=docker.io/library/redis`)
 // but inspects with the short form (`GET /images/redis/json`).
+// `index.docker.io` is the legacy alias older clients / buildx still emit.
 func canonicalRef(ref string) string {
-	if rest, ok := strings.CutPrefix(ref, "docker.io/library/"); ok {
-		return rest
-	}
-	if rest, ok := strings.CutPrefix(ref, "docker.io/"); ok {
-		return rest
-	}
-	if rest, ok := strings.CutPrefix(ref, "library/"); ok {
-		return rest
+	for _, p := range hubPrefixes {
+		if rest, ok := strings.CutPrefix(ref, p); ok {
+			return rest
+		}
 	}
 	return ref
+}
+
+// Safe: docker's reference grammar treats the first segment as a registry only
+// if it contains '.' or ':', so a literal `library/foo` from a custom registry
+// is unreachable on the wire.
+var hubPrefixes = []string{
+	"docker.io/library/",
+	"index.docker.io/library/",
+	"docker.io/",
+	"index.docker.io/",
+	"library/",
 }
 
 // List returns all records, newest first.
