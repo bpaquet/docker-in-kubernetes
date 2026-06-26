@@ -14,6 +14,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	"github.com/bpaquet/docker-in-kubernetes/internal/forwarder"
+	"github.com/bpaquet/docker-in-kubernetes/internal/images"
 	"github.com/bpaquet/docker-in-kubernetes/internal/k8s"
 )
 
@@ -49,6 +50,7 @@ type Config struct {
 	Pods          PodStore
 	Forwarder     PortForwarder
 	Forwards      *forwarder.Registry
+	Images        *images.Store
 }
 
 // New returns the HTTP handler.
@@ -74,6 +76,11 @@ func New(cfg Config) http.Handler {
 		}
 		ch.register(mux)
 		ch.registerExec(mux)
+	}
+
+	if cfg.Images != nil {
+		ih := &imageHandlers{store: cfg.Images, now: time.Now}
+		ih.register(mux)
 	}
 
 	return chain(mux, stripVersionPrefix, logRequests(logger))

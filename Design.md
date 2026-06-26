@@ -122,9 +122,22 @@ K8s pod names are RFC 1123: lowercase alphanumerics + `-`, max 63 chars. Docker 
 
 When no `--name` is given, `internal/podspec.GeneratedName` returns `dik-<image-base>-<hex6>` (e.g. `dik-redis-7af34c`).
 
+## Image primitives
+
+The cluster handles the real pull on pod creation. The daemon keeps an in-memory `images.Store` (ref + tag + pulled-at) so the CLI's image workflow round-trips end-to-end against recorded refs. Store lives only in process memory — lost on restart, never persisted.
+
+| Docker CLI                  | Engine endpoint                          | Behaviour |
+| --------------------------- | ---------------------------------------- | --------- |
+| `docker pull <ref>`         | `POST /images/create`                    | Records the ref. Streams two jsonmessage lines (`Pulling from <ref>`, `Status: Image is up to date for <ref>`). |
+| `docker images`             | `GET /images/json`                       | Lists recorded refs as `ImageSummary` (one entry per ref). `Containers: -1` (we don't track usage). |
+| `docker image inspect <n>`  | `GET /images/<name>/json`                | Resolves name → ref by exact match, `<name>:latest` fallback, or unique short-ID hex prefix. 404 if missing. |
+| `docker image rm <n>`       | `DELETE /images/<name>`                  | Same resolution. Returns `[{Untagged: <ref>}, {Deleted: <id>}]`. 404 if missing. |
+
+**Image ID** is derived deterministically: `id = "sha256:" + hex(sha256(<ref>))`. Same scheme as container IDs — no extra state, regenerable from the ref alone.
+
 ## Non-goals (v1)
 
-- Image build/push/pull management (`docker build`, `docker pull`, `docker images`).
+- Image build/push management (`docker build`, `docker push`). `docker pull` / `images` / `image rm` / `image inspect` are stubbed against an in-memory store — see [Image primitives](#image-primitives).
 - Volume mounts (`-v`) and bind mounts.
 - Networks (`docker network`).
 - Compose, swarm, plugins.
@@ -166,6 +179,7 @@ Real Docker Engine HTTP API, enough that the unmodified `docker` CLI works for:
 | `docker logs`                      | `GET /containers/{id}/logs`                                                 |
 | `docker exec`                      | `POST /containers/{id}/exec`, `POST /exec/{id}/start`, `GET /exec/{id}/json`|
 | `docker version`, `docker info`    | `GET /version`, `GET /info` (static-ish responses)                          |
+| `docker pull`, `docker images`, `docker image rm`, `docker image inspect` | `POST /images/create`, `GET /images/json`, `DELETE /images/{name}`, `GET /images/{name}/json` — see [Image primitives](#image-primitives) |
 
 API version: advertise `1.43` (Docker Engine 24.0) via `/_ping` `Api-Version` header and `/version`. Accept any `/v1.x` prefix and route to the same handlers. This covers the modern `docker` CLI's negotiation floor and Testcontainers' `>= 1.24` minimum without obliging us to implement post-1.43 endpoints.
 
