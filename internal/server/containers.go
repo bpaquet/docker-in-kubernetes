@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -474,6 +475,55 @@ func parseGrace(s string, def time.Duration) time.Duration {
 		return time.Duration(n) * time.Second
 	}
 	return def
+}
+
+// writeRawStreamResponse sends the hijacked-stream response headers. When the
+// client requested `Connection: Upgrade, tcp` (docker CLI default for
+// attach/exec start), we reply 101 Upgraded; otherwise 200 OK.
+func writeRawStreamResponse(r *http.Request, brw *bufio.ReadWriter) error {
+	status := "HTTP/1.1 200 OK\r\n"
+	upgrade := ""
+	if strings.Contains(strings.ToLower(r.Header.Get("Connection")), "upgrade") {
+		status = "HTTP/1.1 101 UPGRADED\r\n"
+		upgrade = "Connection: Upgrade\r\nUpgrade: " + r.Header.Get("Upgrade") + "\r\n"
+	}
+	_, err := brw.WriteString(status +
+		"Content-Type: application/vnd.docker.raw-stream\r\n" +
+		"Api-Version: " + APIVersion + "\r\n" +
+		"Server: docker-in-kubernetes\r\n" +
+		upgrade +
+		"\r\n")
+	if err != nil {
+		return err
+	}
+	return brw.Flush()
+}
+
+// framedWriter serializes stdout/stderr writes from two goroutines into one
+// hijacked conn, each chunk prefixed with a stdcopy header. Non-TTY only —
+// for TTY, multiplexedStdoutStderr returns the raw writer (no framing).
+type framedWriter struct {
+	mu     *sync.Mutex
+	w      io.Writer
+	stream byte
+}
+
+func (f *framedWriter) Write(p []byte) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := writeMultiplexedChunk(f.w, f.stream, p); err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
+
+func multiplexedStdoutStderr(w io.Writer, tty bool) (io.Writer, io.Writer) {
+	if tty {
+		return w, w
+	}
+	var mu sync.Mutex
+	return &framedWriter{mu: &mu, w: w, stream: 1},
+		&framedWriter{mu: &mu, w: w, stream: 2}
 }
 
 // writeMultiplexedChunk emits one Docker stdcopy frame (1B stream, 3B pad, 4B BE size).
