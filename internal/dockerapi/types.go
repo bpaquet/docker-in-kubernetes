@@ -171,6 +171,42 @@ type ProcessConfig struct {
 	Arguments  []string `json:"arguments"`
 }
 
+// ImageSummary is one element of GET /images/json.
+type ImageSummary struct {
+	ID          string            `json:"Id"`
+	ParentID    string            `json:"ParentId"`
+	RepoTags    []string          `json:"RepoTags"`
+	RepoDigests []string          `json:"RepoDigests"`
+	Created     int64             `json:"Created"`
+	Size        int64             `json:"Size"`
+	SharedSize  int64             `json:"SharedSize"`
+	VirtualSize int64             `json:"VirtualSize"`
+	Labels      map[string]string `json:"Labels"`
+	Containers  int               `json:"Containers"`
+}
+
+// ImageInspect is returned by GET /images/{name}/json.
+type ImageInspect struct {
+	ID            string   `json:"Id"`
+	RepoTags      []string `json:"RepoTags"`
+	RepoDigests   []string `json:"RepoDigests"`
+	Parent        string   `json:"Parent"`
+	Comment       string   `json:"Comment"`
+	Created       string   `json:"Created"`
+	DockerVersion string   `json:"DockerVersion"`
+	Author        string   `json:"Author"`
+	Architecture  string   `json:"Architecture"`
+	Os            string   `json:"Os"`
+	Size          int64    `json:"Size"`
+	VirtualSize   int64    `json:"VirtualSize"`
+}
+
+// ImageDeleteItem is one element of the array returned by DELETE /images/{name}.
+type ImageDeleteItem struct {
+	Untagged string `json:"Untagged,omitempty"`
+	Deleted  string `json:"Deleted,omitempty"`
+}
+
 // InfoResponse is the minimal /info subset the docker CLI accepts.
 type InfoResponse struct {
 	ID                string `json:"ID"`

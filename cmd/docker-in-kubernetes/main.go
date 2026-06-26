@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/bpaquet/docker-in-kubernetes/internal/forwarder"
+	"github.com/bpaquet/docker-in-kubernetes/internal/images"
 	"github.com/bpaquet/docker-in-kubernetes/internal/k8s"
 	"github.com/bpaquet/docker-in-kubernetes/internal/logutil"
 	"github.com/bpaquet/docker-in-kubernetes/internal/server"
@@ -75,6 +76,7 @@ func run() error {
 			Pods:          pods,
 			Forwarder:     fw,
 			Forwards:      registry,
+			Images:        images.New(),
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
