@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -212,6 +214,59 @@ func TestListContainersAllIncludesExited(t *testing.T) {
 	assert.Len(t, out, 2)
 }
 
+func TestListContainersSurfacesExitCode(t *testing.T) {
+	pod := managedPod("redis-1")
+	pod.Status = corev1.PodStatus{
+		Phase: corev1.PodFailed,
+		ContainerStatuses: []corev1.ContainerStatus{{
+			State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
+				ExitCode:   137,
+				FinishedAt: metav1.NewTime(time.Now().Add(-90 * time.Second)),
+			}},
+		}},
+	}
+	ts, _, _, _ := newTestHandler(t, pod)
+
+	resp, err := http.Get(ts.URL + "/v1.43/containers/json?all=1")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	var out []dockerapi.ContainerSummary
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
+	require.Len(t, out, 1)
+	assert.Equal(t, "exited", out[0].State)
+	assert.Contains(t, out[0].Status, "Exited (137)")
+	assert.Contains(t, out[0].Status, "ago")
+}
+
+func TestInspectSurfacesExitCodeAndFinishedAt(t *testing.T) {
+	finished := time.Now().Add(-30 * time.Second).UTC().Truncate(time.Second)
+	pod := managedPod("redis-1")
+	pod.Status = corev1.PodStatus{
+		Phase: corev1.PodFailed,
+		ContainerStatuses: []corev1.ContainerStatus{{
+			State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
+				ExitCode:   42,
+				FinishedAt: metav1.NewTime(finished),
+			}},
+		}},
+	}
+	ts, _, _, _ := newTestHandler(t, pod)
+
+	id := podspec.ContainerID(testNamespace, "redis-1")
+	resp, err := http.Get(ts.URL + "/v1.43/containers/" + id + "/json")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	var got dockerapi.ContainerInspect
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+	assert.Equal(t, 42, got.State.ExitCode)
+	assert.NotEmpty(t, got.State.FinishedAt)
+	parsed, err := time.Parse(time.RFC3339Nano, got.State.FinishedAt)
+	require.NoError(t, err)
+	assert.True(t, parsed.Equal(finished), "want %s, got %s", finished, parsed)
+}
+
 func TestInspectReturnsPodFields(t *testing.T) {
 	pod := managedPod("redis-1")
 	pod.Status = corev1.PodStatus{Phase: corev1.PodRunning}
@@ -337,7 +392,11 @@ func TestDeleteMissingContainerIsNoOp(t *testing.T) {
 }
 
 func TestInfo(t *testing.T) {
-	ts, _, _, _ := newTestHandler(t)
+	running := managedPod("redis-1")
+	running.Status = corev1.PodStatus{Phase: corev1.PodRunning}
+	exited := managedPod("redis-2")
+	exited.Status = corev1.PodStatus{Phase: corev1.PodSucceeded}
+	ts, _, _, _ := newTestHandler(t, running, exited)
 
 	resp, err := http.Get(ts.URL + "/info")
 	require.NoError(t, err)
@@ -348,6 +407,42 @@ func TestInfo(t *testing.T) {
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&info))
 	assert.Equal(t, "docker-in-kubernetes", info.Name)
 	assert.Equal(t, "0.0.0-test", info.ServerVersion)
+	assert.Equal(t, 2, info.Containers)
+	assert.Equal(t, 1, info.ContainersRunning)
+	assert.Positive(t, info.NCPU)
+}
+
+func TestInfoLogsAndReturnsZerosOnListError(t *testing.T) {
+	cs := fake.NewClientset()
+	cs.PrependReactor("list", "pods", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, errors.New("boom")
+	})
+	store := k8s.NewPods(cs, testNamespace)
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	h := server.New(server.Config{
+		DaemonVersion: "0.0.0-test",
+		Logger:        logger,
+		Pods:          store,
+		Forwarder:     &fakeForwarder{},
+		Forwards:      forwarder.NewRegistry(),
+	})
+	ts := httptest.NewServer(h)
+	t.Cleanup(ts.Close)
+
+	resp, err := http.Get(ts.URL + "/info")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var info dockerapi.InfoResponse
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&info))
+	assert.Equal(t, 0, info.Containers)
+	assert.Equal(t, 0, info.ContainersRunning)
+	assert.Contains(t, logBuf.String(), "info: list pods failed")
+	assert.Contains(t, logBuf.String(), "boom")
 }
 
 func TestLogsStreamsMultiplexed(t *testing.T) {

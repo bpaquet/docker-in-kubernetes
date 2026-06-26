@@ -3,7 +3,6 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -47,6 +46,8 @@ type PortForwarder interface {
 // Config configures New.
 type Config struct {
 	DaemonVersion string
+	GitCommit     string
+	BuildTime     string
 	Logger        *slog.Logger
 	Pods          PodStore
 	Forwarder     PortForwarder
@@ -67,8 +68,8 @@ func New(cfg Config) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /_ping", handlePing)
 	mux.HandleFunc("HEAD /_ping", handlePing)
-	mux.HandleFunc("GET /version", handleVersion(cfg.DaemonVersion))
-	mux.HandleFunc("GET /info", handleInfo(cfg.DaemonVersion))
+	mux.HandleFunc("GET /version", handleVersion(cfg.DaemonVersion, cfg.GitCommit, cfg.BuildTime))
+	mux.HandleFunc("GET /info", handleInfo(cfg.DaemonVersion, cfg.Pods, logger))
 	mux.HandleFunc("GET /events", handleEvents)
 
 	if cfg.Pods != nil && cfg.Forwarder != nil && cfg.Forwards != nil {
@@ -192,22 +193,20 @@ type versionResponse struct {
 	GoVersion     string `json:"GoVersion"`
 	Os            string `json:"Os"`
 	Arch          string `json:"Arch"`
-	KernelVersion string `json:"KernelVersion"`
 	BuildTime     string `json:"BuildTime"`
 }
 
-func handleVersion(daemonVersion string) http.HandlerFunc {
+func handleVersion(daemonVersion, gitCommit, buildTime string) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
-		setDockerHeaders(w)
-		w.Header().Set("Content-Type", "application/json")
-		resp := versionResponse{
+		writeJSON(w, http.StatusOK, versionResponse{
 			Version:       daemonVersion,
 			APIVersion:    APIVersion,
 			MinAPIVersion: MinAPIVersion,
+			GitCommit:     gitCommit,
 			GoVersion:     runtime.Version(),
 			Os:            "linux",
 			Arch:          runtime.GOARCH,
-		}
-		_ = json.NewEncoder(w).Encode(resp)
+			BuildTime:     buildTime,
+		})
 	}
 }

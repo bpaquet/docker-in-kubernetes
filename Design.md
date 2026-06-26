@@ -196,12 +196,16 @@ Real Docker Engine HTTP API, enough that the unmodified `docker` CLI works for:
 | `docker rm`                        | `DELETE /containers/{id}`                                                   |
 | `docker logs`                      | `GET /containers/{id}/logs`                                                 |
 | `docker exec`                      | `POST /containers/{id}/exec`, `POST /exec/{id}/start`, `GET /exec/{id}/json`|
-| `docker version`, `docker info`    | `GET /version`, `GET /info` (static-ish responses)                          |
+| `docker version`, `docker info`    | `GET /version`, `GET /info` (live container counts; version metadata wired from `-ldflags`) |
 | `docker pull`, `docker images`, `docker image rm`, `docker image inspect` | `POST /images/create`, `GET /images/json`, `DELETE /images/{name}`, `GET /images/{name}/json` — see [Image primitives](#image-primitives) |
 | `docker network create/ls/inspect/rm/connect/disconnect` | `POST /networks/create`, `GET /networks`, `GET /networks/{name}`, `DELETE /networks/{name}`, `POST /networks/{name}/(dis)connect` — see [Network primitives](#network-primitives) |
 | `docker events`, `docker compose up` subscription | `GET /events` — see [Event stream](#event-stream) |
 
 API version: advertise `1.43` (Docker Engine 24.0) via `/_ping` `Api-Version` header and `/version`. Accept any `/v1.x` prefix and route to the same handlers. This covers the modern `docker` CLI's negotiation floor and Testcontainers' `>= 1.24` minimum without obliging us to implement post-1.43 endpoints.
+
+`/version` fills `Version`, `GitCommit`, and `BuildTime` from `-ldflags "-X main.version=... -X main.gitCommit=... -X main.buildTime=..."` (the Makefile derives them from `git describe`, `git rev-parse`, and `date -u`). `/info` reports live `Containers` / `ContainersRunning` counts by listing managed pods on each call; `NCPU` is `runtime.NumCPU()`. We do not advertise `KernelVersion` or `MemTotal` — they're host-level concepts and meaningless when the daemon runs against a remote cluster.
+
+Container exit state surfaces through both `/containers/json` and `/containers/{id}/json`: the real exit code and finish time come from `pod.Status.ContainerStatuses[0].State.Terminated`. `ps` shows `Exited (N) <duration> ago`; `inspect` populates `State.ExitCode` and `State.FinishedAt`.
 
 ## Container ↔ Pod mapping
 

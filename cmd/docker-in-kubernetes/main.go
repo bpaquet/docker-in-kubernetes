@@ -21,8 +21,12 @@ import (
 	"github.com/bpaquet/docker-in-kubernetes/internal/sockutil"
 )
 
-// version is overridden at build time with -ldflags "-X main.version=...".
-var version = "0.0.0-dev"
+// Overridden at build time via the Makefile with -ldflags "-X main.version=... -X main.gitCommit=... -X main.buildTime=...".
+var (
+	version   = "0.0.0-dev"
+	gitCommit = ""
+	buildTime = ""
+)
 
 func main() {
 	if err := run(); err != nil {
@@ -73,6 +77,8 @@ func run() error {
 	httpServer := &http.Server{
 		Handler: server.New(server.Config{
 			DaemonVersion: version,
+			GitCommit:     gitCommit,
+			BuildTime:     buildTime,
 			Logger:        logger,
 			Pods:          pods,
 			Forwarder:     fw,
