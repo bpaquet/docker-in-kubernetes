@@ -91,6 +91,11 @@ func (s *pendingStore) put(p *pendingContainer) {
 // (when non-empty) the same dockerName. Callers must use this — not the
 // getByRef + put pair — to close the TOCTOU window between two concurrent
 // /create calls racing on the same --name.
+//
+// Callers that also need to check for live-pod conflicts should remove() the
+// reservation on the conflict path; the reservation is briefly visible to
+// other /create calls but never to /containers/json (pending listings only
+// appear with ?all=1, and the conflict-path window is sub-millisecond).
 func (s *pendingStore) reserve(p *pendingContainer, dockerName string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()

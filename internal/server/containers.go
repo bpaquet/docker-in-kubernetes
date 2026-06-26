@@ -279,9 +279,12 @@ func (c *containerHandlers) wait(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	pending := c.pending.getByRef(id)
 
-	// Reject unknown refs BEFORE flushing — once we've sent 200 we can't 404.
+	// Resolve the pod name (which is all waitForExit needs) BEFORE flushing
+	// headers — once we've sent 200 we can't 404.
+	var podName string
 	if pending == nil {
-		if _, err := c.pods.FindByID(r.Context(), id); err != nil {
+		pod, err := c.pods.FindByID(r.Context(), id)
+		if err != nil {
 			if errors.Is(err, k8s.ErrNotFound) {
 				writeError(w, http.StatusNotFound, "no such container: "+id)
 				return
@@ -289,6 +292,9 @@ func (c *containerHandlers) wait(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		podName = pod.Name
+	} else {
+		podName = pending.Spec.Name
 	}
 
 	setDockerHeaders(w)
@@ -304,11 +310,7 @@ func (c *containerHandlers) wait(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	pod, err := c.pods.FindByID(r.Context(), id)
-	if err != nil {
-		return
-	}
-	exit, gone, err := c.waitForExit(r.Context(), pod.Name)
+	exit, gone, err := c.waitForExit(r.Context(), podName)
 	if err != nil {
 		return
 	}
@@ -318,8 +320,8 @@ func (c *containerHandlers) wait(w http.ResponseWriter, r *http.Request) {
 		// namespace teardown). Real dockerd surfaces the same via WaitResponse.Error.
 		resp.Error = &dockerapi.WaitError{Message: "container was removed before exit was observed"}
 	} else if r.URL.Query().Get("condition") == "removed" {
-		_ = c.registry.Close(podspec.ContainerID(pod.Namespace, pod.Name))
-		_ = c.pods.Delete(r.Context(), pod.Name, 0)
+		_ = c.registry.Close(podspec.ContainerID(c.pods.Namespace(), podName))
+		_ = c.pods.Delete(r.Context(), podName, 0)
 	}
 	_ = json.NewEncoder(w).Encode(resp)
 }

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -19,6 +18,10 @@ import (
 // TestWaitFlagsExternalPodDeletion locks in that /wait surfaces a pod that
 // disappeared mid-wait via WaitResponse.Error rather than masking it as a
 // clean exit 0. Real dockerd does the same.
+//
+// The test deletes the pod AFTER the server has flushed 200 (i.e. after
+// http.Post returns headers) — at that point we know the server is inside
+// the waitForExit poll loop, so the delete reliably triggers gone=true.
 func TestWaitFlagsExternalPodDeletion(t *testing.T) {
 	pod := managedPod("redis-1")
 	pod.Status = corev1.PodStatus{Phase: corev1.PodRunning}
@@ -26,15 +29,12 @@ func TestWaitFlagsExternalPodDeletion(t *testing.T) {
 
 	id := podspec.ContainerID(testNamespace, "redis-1")
 
-	go func() {
-		time.Sleep(20 * time.Millisecond)
-		_ = cs.CoreV1().Pods(testNamespace).Delete(context.Background(), "redis-1", metav1.DeleteOptions{})
-	}()
-
 	resp, err := http.Post(ts.URL+"/v1.43/containers/"+id+"/wait", "", nil)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	require.NoError(t, cs.CoreV1().Pods(testNamespace).Delete(context.Background(), "redis-1", metav1.DeleteOptions{}))
 
 	var got dockerapi.WaitResponse
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
