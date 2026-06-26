@@ -77,7 +77,38 @@ func TestNetworkList(t *testing.T) {
 
 	var out []dockerapi.Network
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
-	assert.Len(t, out, 2)
+	assert.Len(t, out, 3, "bridge seed + a + b")
+}
+
+func TestNetworkCreateConflict(t *testing.T) {
+	ts, _ := newNetworkTestServer(t)
+	body, _ := json.Marshal(dockerapi.NetworkCreateRequest{Name: "x", Driver: "bridge"})
+
+	resp, err := http.Post(ts.URL+"/v1.43/networks/create", "application/json", bytes.NewReader(body))
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	resp, err = http.Post(ts.URL+"/v1.43/networks/create", "application/json", bytes.NewReader(body))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusConflict, resp.StatusCode)
+}
+
+func TestNetworkCreateMissingName(t *testing.T) {
+	ts, _ := newNetworkTestServer(t)
+	resp, err := http.Post(ts.URL+"/v1.43/networks/create", "application/json", bytes.NewReader([]byte(`{}`)))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+func TestNetworkInspectBridgeSeed(t *testing.T) {
+	ts, _ := newNetworkTestServer(t)
+	resp, err := http.Get(ts.URL + "/v1.43/networks/bridge")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
 func TestNetworkDelete(t *testing.T) {

@@ -24,6 +24,13 @@ func TestStoreRecordAndFind(t *testing.T) {
 	assert.Len(t, r.ID(), 64)
 }
 
+func TestStoreSeedsBridge(t *testing.T) {
+	s := networks.New()
+	r, ok := s.Find("bridge")
+	require.True(t, ok)
+	assert.Equal(t, "bridge", r.Driver)
+}
+
 func TestStoreList(t *testing.T) {
 	s := networks.New()
 	t0 := time.Date(2026, 6, 26, 10, 0, 0, 0, time.UTC)
@@ -31,9 +38,11 @@ func TestStoreList(t *testing.T) {
 	s.Record("b", "bridge", nil, t0.Add(time.Second))
 
 	list := s.List()
-	require.Len(t, list, 2)
+	require.Len(t, list, 3, "bridge + a + b")
+	// newest first; bridge has unix-epoch CreatedAt so it sorts last.
 	assert.Equal(t, "b", list[0].Name)
 	assert.Equal(t, "a", list[1].Name)
+	assert.Equal(t, "bridge", list[2].Name)
 }
 
 func TestStoreRemove(t *testing.T) {

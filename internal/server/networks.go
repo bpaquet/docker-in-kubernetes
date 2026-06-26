@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
@@ -10,9 +11,6 @@ import (
 	"github.com/bpaquet/docker-in-kubernetes/internal/networks"
 )
 
-// networkHandlers serves the /networks endpoints. We don't model real
-// networks — the daemon's k8s namespace IS the network. Endpoints exist
-// so compose's create-on-missing / connect / disconnect flows succeed.
 type networkHandlers struct {
 	store *networks.Store
 	now   func() time.Time
@@ -35,6 +33,10 @@ func (h *networkHandlers) create(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Name == "" {
 		writeError(w, http.StatusBadRequest, "Name is required")
+		return
+	}
+	if h.store.Has(req.Name) {
+		writeError(w, http.StatusConflict, fmt.Sprintf("network with name %s already exists", req.Name))
 		return
 	}
 	rec := h.store.Record(req.Name, req.Driver, req.Labels, h.now())
@@ -69,9 +71,10 @@ func (h *networkHandlers) delete(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// Connect/disconnect are no-ops: every pod in the namespace can already
-// reach every other pod, so there's nothing to wire.
-func (h *networkHandlers) noop(w http.ResponseWriter, _ *http.Request) {
+// noop: pods in the same namespace already reach each other; nothing to wire.
+// Body is drained so keep-alive can reuse the connection.
+func (h *networkHandlers) noop(w http.ResponseWriter, r *http.Request) {
+	_, _ = io.Copy(io.Discard, r.Body)
 	w.WriteHeader(http.StatusOK)
 }
 

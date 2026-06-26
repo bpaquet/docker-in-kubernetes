@@ -1,7 +1,5 @@
-// Package networks is the in-memory record of `docker network` calls.
-//
-// We don't model real networks — the daemon's k8s namespace IS the network.
-// The store exists so compose's create-on-missing probe round-trips.
+// Package networks backs the /networks endpoints. The k8s namespace is the
+// real fabric; this store only exists to round-trip compose's pre-create probe.
 package networks
 
 import (
@@ -20,7 +18,7 @@ type Record struct {
 	CreatedAt time.Time
 }
 
-// ID returns the synthetic network ID: "sha256:" + hex(sha256(name)).
+// ID returns hex(sha256(name)) — matches Docker's network ID format (no sha256: prefix).
 func (r Record) ID() string {
 	sum := sha256.Sum256([]byte(r.Name))
 	return hex.EncodeToString(sum[:])
@@ -32,9 +30,20 @@ type Store struct {
 	m  map[string]Record
 }
 
-// New returns an empty Store.
+// New returns a Store pre-seeded with the `bridge` network so `docker network
+// ls` matches what tools expect from a real daemon.
 func New() *Store {
-	return &Store{m: make(map[string]Record)}
+	s := &Store{m: make(map[string]Record)}
+	s.Record("bridge", "bridge", nil, time.Unix(0, 0))
+	return s
+}
+
+// Has reports whether name is recorded.
+func (s *Store) Has(name string) bool {
+	s.mu.RLock()
+	_, ok := s.m[name]
+	s.mu.RUnlock()
+	return ok
 }
 
 // Record upserts by name and returns the stored copy.
