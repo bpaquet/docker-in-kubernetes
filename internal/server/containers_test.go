@@ -173,6 +173,11 @@ func TestCreateAllocatesRandomHostPort(t *testing.T) {
 			assert.Equal(t, "127.0.0.1", bindings[0].HostIP)
 			assert.NotEmpty(t, bindings[0].HostPort, "expected allocated host port")
 			assert.NotEqual(t, "0", bindings[0].HostPort)
+
+			// Both fields downstream readers may touch should agree.
+			hostBindings := inspect.HostConfig.PortBindings["6379/tcp"]
+			require.Len(t, hostBindings, 1)
+			assert.Equal(t, bindings[0].HostPort, hostBindings[0].HostPort)
 		})
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"context"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -38,9 +39,11 @@ func TestTestcontainersRedisRoundTrip(t *testing.T) {
 
 func buildTestcontainersApp(t *testing.T) string {
 	t.Helper()
-	repoRoot, err := filepath.Abs("../..")
-	require.NoError(t, err)
-	appDir := filepath.Join(repoRoot, "internal", "integration", "testcontainers_app")
+	// Locate the app dir relative to this source file, not cwd — `go test`
+	// invoked from a different directory shouldn't break the build path.
+	_, thisFile, _, ok := runtime.Caller(0)
+	require.True(t, ok, "runtime.Caller(0) failed")
+	appDir := filepath.Join(filepath.Dir(thisFile), "testcontainers_app")
 	binPath := filepath.Join(t.TempDir(), "testcontainers_app")
 
 	build := exec.Command("go", "build", "-o", binPath, ".")

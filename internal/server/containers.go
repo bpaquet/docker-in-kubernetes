@@ -461,12 +461,20 @@ func parseLabelFilters(raw string, logger *slog.Logger) ([]labelFilter, error) {
 	}
 	var arr map[string][]string
 	if err := json.Unmarshal([]byte(raw), &arr); err == nil {
-		logDroppedFilterKeys(logger, arr)
+		for k := range arr {
+			if k != "label" {
+				logger.Debug("containers.list: dropping unsupported filter key", "key", k)
+			}
+		}
 		return labelFiltersFromValues(arr["label"]), nil
 	}
 	var mapSet map[string]map[string]bool
 	if err := json.Unmarshal([]byte(raw), &mapSet); err == nil {
-		logDroppedFilterKeys(logger, mapSet)
+		for k := range mapSet {
+			if k != "label" {
+				logger.Debug("containers.list: dropping unsupported filter key", "key", k)
+			}
+		}
 		values := make([]string, 0, len(mapSet["label"]))
 		for v := range mapSet["label"] {
 			values = append(values, v)
@@ -474,18 +482,6 @@ func parseLabelFilters(raw string, logger *slog.Logger) ([]labelFilter, error) {
 		return labelFiltersFromValues(values), nil
 	}
 	return nil, errors.New("filters must be JSON object")
-}
-
-func logDroppedFilterKeys[V any](logger *slog.Logger, parsed map[string]V) {
-	if logger == nil {
-		return
-	}
-	for k := range parsed {
-		if k == "label" {
-			continue
-		}
-		logger.Debug("containers.list: dropping unsupported filter key", "key", k)
-	}
 }
 
 type labelFilter struct {
@@ -687,32 +683,32 @@ func podTerminated(pod *corev1.Pod) bool {
 
 // allocateHostPorts assigns a free 127.0.0.1 TCP port to every mapping that
 // asked for a random one. Docker accepts both "" and "0" as the
-// "allocate-anything" signal (testcontainers v0.43 sends "0"); we treat
-// them the same. Bind→discover→close races with the forwarder rebind, but
-// that race exists in moby too.
+// "allocate-anything" signal (testcontainers v0.43 sends "0").
+//
+// Listeners are held open until every mapping has a port, then released
+// together — sequential close-then-listen could legitimately yield the same
+// port twice for a multi-port container. The bind→close→forwarder-rebind
+// race across requests is still present and acknowledged in Design.md.
 func allocateHostPorts(mappings []podspec.PortMapping) error {
+	var holders []net.Listener
+	defer func() {
+		for _, l := range holders {
+			_ = l.Close()
+		}
+	}()
 	for i := range mappings {
 		if mappings[i].HostPort != "" && mappings[i].HostPort != "0" {
 			continue
 		}
-		port, err := pickFreeTCPPort()
+		l, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
 			return fmt.Errorf("allocate host port for %d/%s: %w",
 				mappings[i].ContainerPort, mappings[i].Protocol, err)
 		}
-		mappings[i].HostPort = strconv.Itoa(port)
+		holders = append(holders, l)
+		mappings[i].HostPort = strconv.Itoa(l.Addr().(*net.TCPAddr).Port)
 	}
 	return nil
-}
-
-func pickFreeTCPPort() (int, error) {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return 0, err
-	}
-	port := l.Addr().(*net.TCPAddr).Port
-	_ = l.Close()
-	return port, nil
 }
 
 func writePortsAnnotation(pod *corev1.Pod, mappings []podspec.PortMapping) error {
