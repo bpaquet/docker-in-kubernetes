@@ -13,6 +13,15 @@ import (
 	"github.com/bpaquet/docker-in-kubernetes/internal/podspec"
 )
 
+// Container state strings as docker ps / inspect surface them. Keep in sync
+// with dockerStateFromPhase below.
+const (
+	StateRunning = "running"
+	StateCreated = "created"
+	StateExited  = "exited"
+	StateDead    = "dead"
+)
+
 func buildSummary(pod *corev1.Pod) dockerapi.ContainerSummary {
 	state := dockerStateFromPhase(pod.Status.Phase)
 	created := creationTime(pod)
@@ -110,13 +119,13 @@ func buildInspect(pod *corev1.Pod) dockerapi.ContainerInspect {
 	}
 	inspectState := dockerapi.InspectState{
 		Status:    state,
-		Running:   state == "running",
+		Running:   state == StateRunning,
 		StartedAt: rfc3339(startedAt),
 	}
 	if term := terminationOf(pod); term != nil {
 		inspectState.ExitCode = int(term.exitCode)
 		inspectState.FinishedAt = rfc3339(term.finishedAt)
-	} else if state == "exited" {
+	} else if state == StateExited {
 		inspectState.FinishedAt = time.Now().UTC().Format(time.RFC3339)
 	}
 
@@ -220,28 +229,28 @@ func portsBindings(mappings []podspec.PortMapping) map[string][]dockerapi.PortBi
 func dockerStateFromPhase(phase corev1.PodPhase) string {
 	switch phase {
 	case corev1.PodRunning:
-		return "running"
+		return StateRunning
 	case corev1.PodPending:
-		return "created"
+		return StateCreated
 	case corev1.PodSucceeded:
-		return "exited"
+		return StateExited
 	case corev1.PodFailed:
-		return "exited"
+		return StateExited
 	case corev1.PodUnknown:
-		return "dead"
+		return StateDead
 	default:
-		return "created"
+		return StateCreated
 	}
 }
 
 func status(state string, created time.Time, term *termination, now time.Time) string {
 	switch state {
-	case "running":
+	case StateRunning:
 		if created.IsZero() {
 			return "Up"
 		}
 		return "Up " + humanDuration(now.Sub(created))
-	case "exited":
+	case StateExited:
 		code := int32(0)
 		var ago string
 		if term != nil {
@@ -251,9 +260,9 @@ func status(state string, created time.Time, term *termination, now time.Time) s
 			}
 		}
 		return fmt.Sprintf("Exited (%d)%s", code, ago)
-	case "created":
+	case StateCreated:
 		return "Created"
-	case "dead":
+	case StateDead:
 		return "Dead"
 	}
 	return state

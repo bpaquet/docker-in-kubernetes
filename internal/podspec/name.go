@@ -35,7 +35,7 @@ func GeneratedName(image string) string {
 	if err != nil || clean == "" {
 		clean = "dik"
 	}
-	suffix := randomSuffix(6)
+	suffix := RandomSuffix(6)
 	full := clean + "-" + suffix
 	if len(full) > maxK8sNameLen {
 		full = full[:maxK8sNameLen]
@@ -56,10 +56,11 @@ func imageBase(image string) string {
 }
 
 func randomName() string {
-	return "dik-" + randomSuffix(8)
+	return "dik-" + RandomSuffix(8)
 }
 
-func randomSuffix(n int) string {
+// RandomSuffix returns n lowercase hex chars from crypto/rand.
+func RandomSuffix(n int) string {
 	b := make([]byte, (n+1)/2)
 	if _, err := rand.Read(b); err != nil {
 		panic(fmt.Sprintf("crypto/rand: %v", err))
