@@ -59,9 +59,7 @@ func randomName() string {
 	return "dik-" + RandomSuffix(8)
 }
 
-// RandomSuffix returns n lowercase hex chars from crypto/rand. Panics if the
-// system RNG is unavailable — same posture as crypto/rand.Read in any other
-// reasonable program.
+// RandomSuffix returns n lowercase hex chars from crypto/rand.
 func RandomSuffix(n int) string {
 	b := make([]byte, (n+1)/2)
 	if _, err := rand.Read(b); err != nil {
