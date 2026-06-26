@@ -69,6 +69,7 @@ func New(cfg Config) http.Handler {
 	mux.HandleFunc("HEAD /_ping", handlePing)
 	mux.HandleFunc("GET /version", handleVersion(cfg.DaemonVersion))
 	mux.HandleFunc("GET /info", handleInfo(cfg.DaemonVersion))
+	mux.HandleFunc("GET /events", handleEvents)
 
 	if cfg.Pods != nil && cfg.Forwarder != nil && cfg.Forwards != nil {
 		cleanupPoll := cfg.CleanupPollInterval

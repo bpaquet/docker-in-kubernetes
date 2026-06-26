@@ -149,6 +149,10 @@ The daemon's k8s namespace IS the network — every pod in it can reach every ot
 
 **Network ID** is `hex(sha256(name))` (no `sha256:` prefix to match Docker's network ID format).
 
+## Event stream
+
+`GET /events` holds the connection open and emits nothing. Compose subscribes to it for the lifetime of `compose up`; closing early triggers reconnect loops and log noise. Modelling real pod lifecycle events as Docker-shaped events is a follow-up — a quiet stream is enough for compose, `docker events --until=…` (window-based exit), and any tool that just wants the subscription to succeed.
+
 ## Non-goals (v1)
 
 - Image build/push management (`docker build`, `docker push`). `docker pull` / `images` / `image rm` / `image inspect` are stubbed against an in-memory store — see [Image primitives](#image-primitives).
@@ -195,6 +199,7 @@ Real Docker Engine HTTP API, enough that the unmodified `docker` CLI works for:
 | `docker version`, `docker info`    | `GET /version`, `GET /info` (static-ish responses)                          |
 | `docker pull`, `docker images`, `docker image rm`, `docker image inspect` | `POST /images/create`, `GET /images/json`, `DELETE /images/{name}`, `GET /images/{name}/json` — see [Image primitives](#image-primitives) |
 | `docker network create/ls/inspect/rm/connect/disconnect` | `POST /networks/create`, `GET /networks`, `GET /networks/{name}`, `DELETE /networks/{name}`, `POST /networks/{name}/(dis)connect` — see [Network primitives](#network-primitives) |
+| `docker events`, `docker compose up` subscription | `GET /events` — see [Event stream](#event-stream) |
 
 API version: advertise `1.43` (Docker Engine 24.0) via `/_ping` `Api-Version` header and `/version`. Accept any `/v1.x` prefix and route to the same handlers. This covers the modern `docker` CLI's negotiation floor and Testcontainers' `>= 1.24` minimum without obliging us to implement post-1.43 endpoints.
 

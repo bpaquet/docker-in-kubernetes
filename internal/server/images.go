@@ -67,12 +67,10 @@ func (h *imageHandlers) create(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 
 	enc := json.NewEncoder(w)
-	flusher, _ := w.(http.Flusher)
+	respCtl := http.NewResponseController(w)
 	emit := func(msg map[string]string) {
 		_ = enc.Encode(msg)
-		if flusher != nil {
-			flusher.Flush()
-		}
+		_ = respCtl.Flush()
 	}
 	emit(map[string]string{"status": "Pulling from " + fromImage, "id": displayTag(tag)})
 	emit(map[string]string{"status": "Status: Image is up to date for " + ref})
