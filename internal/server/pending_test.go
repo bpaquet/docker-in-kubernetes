@@ -2,6 +2,8 @@ package server
 
 import (
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -40,4 +42,39 @@ func TestPendingStoreReapsExpiredEntries(t *testing.T) {
 	old.mu.Lock()
 	defer old.mu.Unlock()
 	assert.True(t, errors.Is(old.failed, errPendingExpired), "expired waiter should see errPendingExpired")
+}
+
+// TestReserveSerializesDuplicateName fires N concurrent reserve calls with the
+// same dockerName and asserts exactly one wins. The pre-fix code did
+// getByRef-then-put without a single lock acquisition; two threads could both
+// see "no conflict" and both insert.
+func TestReserveSerializesDuplicateName(t *testing.T) {
+	s := newPendingStoreWith(time.Hour, time.Now)
+
+	const concurrency = 32
+	var wins int32
+	var wg sync.WaitGroup
+	wg.Add(concurrency)
+	for i := range concurrency {
+		go func() {
+			defer wg.Done()
+			entry := &pendingContainer{
+				ID:         "id-" + idSuffix(i),
+				DockerName: "shared",
+				Spec:       &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "shared-" + idSuffix(i)}},
+				CreatedAt:  time.Now(),
+				startCh:    make(chan struct{}),
+			}
+			if s.reserve(entry, "shared") {
+				atomic.AddInt32(&wins, 1)
+			}
+		}()
+	}
+	wg.Wait()
+	assert.Equal(t, int32(1), wins, "exactly one of %d concurrent reservations must win", concurrency)
+}
+
+func idSuffix(i int) string {
+	const hex = "0123456789abcdef"
+	return string([]byte{hex[i&0xf], hex[(i>>4)&0xf]})
 }
