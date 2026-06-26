@@ -67,7 +67,7 @@ func (c *containerHandlers) attach(w http.ResponseWriter, r *http.Request) {
 	wantStdin := boolQuery(r, "stdin")
 	tty := len(pod.Spec.Containers) > 0 && pod.Spec.Containers[0].TTY
 
-	conn, brw, err := hijack(w)
+	conn, brw, err := http.NewResponseController(w).Hijack()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

@@ -3,17 +3,10 @@ package server
 import (
 	"bufio"
 	"io"
-	"net"
 	"net/http"
 	"strings"
 	"sync"
 )
-
-// hijack takes over the underlying TCP connection. NewResponseController walks
-// any wrapping middleware (e.g. statusRecorder) via its Unwrap method.
-func hijack(w http.ResponseWriter) (net.Conn, *bufio.ReadWriter, error) {
-	return http.NewResponseController(w).Hijack()
-}
 
 // writeRawStreamResponse sends the hijacked-stream response headers. When the
 // client requested `Connection: Upgrade, tcp` (docker CLI default for

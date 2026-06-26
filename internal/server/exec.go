@@ -104,7 +104,7 @@ func (c *containerHandlers) execStart(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.CopyN(io.Discard, r.Body, r.ContentLength)
 	}
 
-	conn, brw, err := hijack(w)
+	conn, brw, err := http.NewResponseController(w).Hijack()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
