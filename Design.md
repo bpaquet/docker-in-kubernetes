@@ -44,6 +44,8 @@ A v1 plus a few additions can run the common Testcontainers modules (Redis, Post
 
 **Known blocker**: the **Ryuk reaper** container connects *back* to the Docker socket from inside the cluster — impossible when the socket lives on the user's laptop. Mitigation: require `TESTCONTAINERS_RYUK_DISABLED=true`. Aligns with our "no cleanup on shim exit" stance.
 
+**Smoke-tested**: `internal/integration/testcontainers_test.go` drives `testcontainers-go` against the daemon — spawns `redis:7-alpine`, resolves `Endpoint()` to a forwarded `127.0.0.1:port`, and exercises PING/SET/GET via the real Go redis client.
+
 ### Devcontainers — not pursued
 
 Two fundamental blockers:
