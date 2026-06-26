@@ -201,6 +201,15 @@ func (c *containerHandlers) create(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if err := allocateHostPorts(built.PortMappings); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := writePortsAnnotation(built.Pod, built.PortMappings); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
 	c.pending.put(&pendingContainer{
 		ID:         id,
 		DockerName: dockerName,
@@ -595,6 +604,50 @@ func podTerminated(pod *corev1.Pod) bool {
 		}
 	}
 	return false
+}
+
+// allocateHostPorts assigns a free 127.0.0.1 TCP port to every mapping with
+// empty HostPort. Mirrors Docker's "publish a random ephemeral port"
+// semantics (testcontainers relies on it). Bind→discover→close races with
+// the forwarder rebind, but that race exists in moby too.
+func allocateHostPorts(mappings []podspec.PortMapping) error {
+	for i := range mappings {
+		if mappings[i].HostPort != "" {
+			continue
+		}
+		port, err := pickFreeTCPPort()
+		if err != nil {
+			return fmt.Errorf("allocate host port for %d/%s: %w",
+				mappings[i].ContainerPort, mappings[i].Protocol, err)
+		}
+		mappings[i].HostPort = strconv.Itoa(port)
+	}
+	return nil
+}
+
+func pickFreeTCPPort() (int, error) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, err
+	}
+	port := l.Addr().(*net.TCPAddr).Port
+	_ = l.Close()
+	return port, nil
+}
+
+func writePortsAnnotation(pod *corev1.Pod, mappings []podspec.PortMapping) error {
+	if len(mappings) == 0 {
+		return nil
+	}
+	b, err := json.Marshal(mappings)
+	if err != nil {
+		return fmt.Errorf("marshal ports annotation: %w", err)
+	}
+	if pod.Annotations == nil {
+		pod.Annotations = make(map[string]string)
+	}
+	pod.Annotations[podspec.AnnotationPorts] = string(b)
+	return nil
 }
 
 // loadMappingsFromPod decodes the ports annotation written at create time.
