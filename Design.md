@@ -126,7 +126,7 @@ K8s pod names are RFC 1123: lowercase alphanumerics + `-`, max 63 chars. Docker 
 - Truncate to 63 chars and re-trim a trailing `-`.
 - Store the original `--name` in annotation `docker-in-kubernetes.io/docker-name` so `docker ps`/`inspect` round-trip the user's chosen name.
 
-When no `--name` is given, `internal/podspec.GeneratedName` returns `dik-<image-base>-<hex6>` (e.g. `dik-redis-7af34c`).
+When no `--name` is given, `internal/podspec.GeneratedName` returns `dink-<image-base>-<hex6>` (e.g. `dink-redis-7af34c`).
 
 ## Image primitives
 
@@ -216,7 +216,7 @@ Container exit state surfaces through both `/containers/json` and `/containers/{
 ## Container ↔ Pod mapping
 
 - **1 container = 1 Pod**, single container inside the pod.
-- **Pod name**: sanitized `--name` if provided; otherwise `dik-<image-base>-<hex6>` (see *Container name sanitization*).
+- **Pod name**: sanitized `--name` if provided; otherwise `dink-<image-base>-<hex6>` (see *Container name sanitization*).
 - **Docker container ID**: `sha256("<namespace>/<podname>")` rendered as 64 hex chars; first 12 chars used for the short ID.
 - **Pod spec**:
   - `restartPolicy: Never`

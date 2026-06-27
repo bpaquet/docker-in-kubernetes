@@ -82,7 +82,7 @@ func newEnv(t *testing.T) *testEnv {
 	fw := forwarder.NewSPDYForwarder(conn.Clientset, conn.REST, slog.Default())
 
 	// /tmp-rooted: darwin's sun_path is 104 bytes; t.TempDir() blows past it.
-	socketDir, err := os.MkdirTemp("/tmp", "dik")
+	socketDir, err := os.MkdirTemp("/tmp", "dink")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
 	socketPath := filepath.Join(socketDir, "s")
