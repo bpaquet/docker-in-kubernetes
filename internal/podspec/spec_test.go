@@ -75,7 +75,7 @@ func TestBuildGeneratesNameWhenDockerNameEmpty(t *testing.T) {
 		Request:   dockerapi.CreateRequest{Image: "redis"},
 	})
 	require.NoError(t, err)
-	assert.Contains(t, res.PodName, "dik-redis-")
+	assert.Contains(t, res.PodName, "dink-redis-")
 }
 
 func TestBuildRejectsEmptyImage(t *testing.T) {

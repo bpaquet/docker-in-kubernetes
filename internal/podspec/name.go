@@ -28,12 +28,12 @@ func SanitizeName(input string) (string, error) {
 	return out, nil
 }
 
-// GeneratedName returns "dik-<image-base>-<hex6>" for use when --name is empty.
+// GeneratedName returns "dink-<image-base>-<hex6>" for use when --name is empty.
 func GeneratedName(image string) string {
 	base := imageBase(image)
-	clean, err := SanitizeName("dik-" + base)
+	clean, err := SanitizeName("dink-" + base)
 	if err != nil || clean == "" {
-		clean = "dik"
+		clean = "dink"
 	}
 	suffix := RandomSuffix(6)
 	full := clean + "-" + suffix
@@ -56,7 +56,7 @@ func imageBase(image string) string {
 }
 
 func randomName() string {
-	return "dik-" + RandomSuffix(8)
+	return "dink-" + RandomSuffix(8)
 }
 
 // RandomSuffix returns n lowercase hex chars from crypto/rand.
