@@ -37,10 +37,10 @@ func TestSanitizeNameEmptyReturnsRandom(t *testing.T) {
 	require.NoError(t, err)
 	b, err := podspec.SanitizeName("")
 	require.NoError(t, err)
-	assert.True(t, strings.HasPrefix(a, "dik-"))
-	assert.True(t, strings.HasPrefix(b, "dik-"))
+	assert.True(t, strings.HasPrefix(a, "dink-"))
+	assert.True(t, strings.HasPrefix(b, "dink-"))
 	assert.NotEqual(t, a, b)
-	assert.Len(t, a, len("dik-")+8)
+	assert.Len(t, a, len("dink-")+8)
 }
 
 func TestSanitizeNameAllInvalidChars(t *testing.T) {
@@ -63,11 +63,11 @@ func TestGeneratedNameUsesImageBase(t *testing.T) {
 		image string
 		want  string // expected prefix before the random suffix
 	}{
-		{"redis", "dik-redis-"},
-		{"redis:7.2", "dik-redis-"},
-		{"library/redis", "dik-redis-"},
-		{"registry.example.com/library/redis:7.2", "dik-redis-"},
-		{"redis@sha256:abc", "dik-redis-"},
+		{"redis", "dink-redis-"},
+		{"redis:7.2", "dink-redis-"},
+		{"library/redis", "dink-redis-"},
+		{"registry.example.com/library/redis:7.2", "dink-redis-"},
+		{"redis@sha256:abc", "dink-redis-"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.image, func(t *testing.T) {

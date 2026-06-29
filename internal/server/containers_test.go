@@ -29,7 +29,7 @@ import (
 	"github.com/bpaquet/docker-in-kubernetes/internal/server"
 )
 
-const testNamespace = "dik-test"
+const testNamespace = "dink-test"
 
 type fakeForwarder struct {
 	mu   sync.Mutex

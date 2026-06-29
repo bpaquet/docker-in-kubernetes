@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// docker run without --name uses the generated dik-<image>-<hex6> path.
+// docker run without --name uses the generated dink-<image>-<hex6> path.
 func TestDockerRunGeneratedName(t *testing.T) {
 	env := newEnv(t)
 
@@ -23,7 +23,7 @@ func TestDockerRunGeneratedName(t *testing.T) {
 
 	psOut, err := env.docker(t, 15*time.Second, "ps")
 	require.NoError(t, err)
-	assert.Contains(t, psOut, "dik-alpine-", "ps NAMES column should show the generated name")
+	assert.Contains(t, psOut, "dink-alpine-", "ps NAMES column should show the generated name")
 }
 
 func TestDockerRunDuplicateNameFails(t *testing.T) {

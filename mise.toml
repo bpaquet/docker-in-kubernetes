@@ -38,17 +38,17 @@ description = "Run the same checks CI runs (fmt, vet, lint, test)"
 depends = ["fmt", "vet", "lint", "test"]
 
 # --- Integration testing against a kind cluster -----------------------------
-# Lives entirely under ./tmp and a dedicated kind cluster named `dik-test`.
+# Lives entirely under ./tmp and a dedicated kind cluster named `dink-test`.
 # Never touches ~/.kube/config.
 
 [tasks.integration-up]
-description = "Create the dik-test kind cluster (or refresh kubeconfig if it already exists) and ensure the docker-in-kubernetes namespace"
+description = "Create the dink-test kind cluster (or refresh kubeconfig if it already exists) and ensure the docker-in-kubernetes namespace"
 run = """
 mkdir -p tmp
-if kind get clusters 2>/dev/null | grep -q '^dik-test$'; then
-  kind export kubeconfig --name dik-test --kubeconfig ./tmp/integration-kubeconfig
+if kind get clusters 2>/dev/null | grep -q '^dink-test$'; then
+  kind export kubeconfig --name dink-test --kubeconfig ./tmp/integration-kubeconfig
 else
-  kind create cluster --name dik-test --kubeconfig ./tmp/integration-kubeconfig
+  kind create cluster --name dink-test --kubeconfig ./tmp/integration-kubeconfig
 fi
 export KUBECONFIG=./tmp/integration-kubeconfig
 kubectl create namespace docker-in-kubernetes --dry-run=client -o yaml | kubectl apply -f -
@@ -63,11 +63,11 @@ done
 """
 
 [tasks.integration-down]
-description = "Delete the dik-test kind cluster"
-run = "kind delete cluster --name dik-test"
+description = "Delete the dink-test kind cluster"
+run = "kind delete cluster --name dink-test"
 
 [tasks.integration-test]
-description = "Run integration tests against the dik-test kind cluster (must be up)"
+description = "Run integration tests against the dink-test kind cluster (must be up)"
 # -v on by default: each test does network work and may take seconds; per-test
 # pass/fail lines make CI logs intelligible.
 run = 'KUBECONFIG="$PWD/tmp/integration-kubeconfig" go test -tags=integration -count=1 -v -timeout 10m ./internal/integration/...'
